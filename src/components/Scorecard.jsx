@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react';
 import { db } from '../firebase';
 import { collection, getDocs } from 'firebase/firestore';
 
-
 const Scorecard = () => {
   const [courses, setCourses] = useState([]);
   const [selectedCourse, setSelectedCourse] = useState('');
@@ -93,6 +92,107 @@ const Scorecard = () => {
     fetchScorecard();
   }, [selectedCourse, selectedGroup]);
 
+  const selectedCourseData =
+    courses.find(c => c.id === selectedCourse || c.courseId === selectedCourse) || null;
+
+  const getHolePar = (course, holeIndex) => {
+    if (!course) return null;
+    return (
+      course.pars?.[holeIndex] ??
+      course.holes?.[holeIndex]?.par ??
+      course.courseHoles?.[holeIndex]?.par ??
+      null
+    );
+  };
+
+  const getIconType = (score, par) => {
+    if (!score || !par) return 'none';
+    const delta = score - par;
+    if (delta <= -3) return 'albatross';
+    if (delta === -2) return 'eagle';
+    if (delta === -1) return 'birdie';
+    if (delta === 0) return 'par';
+    if (delta === 1) return 'bogey';
+    if (delta === 2) return 'double';
+    return 'triple';
+  };
+
+  const getIconLabel = (type) => {
+    switch (type) {
+      case 'albatross':
+        return 'Albatross or better';
+      case 'eagle':
+        return 'Eagle';
+      case 'birdie':
+        return 'Birdie';
+      case 'par':
+        return 'Par';
+      case 'bogey':
+        return 'Bogey';
+      case 'double':
+        return 'Double bogey';
+      case 'triple':
+        return 'Triple bogey or worse';
+      default:
+        return '';
+    }
+  };
+
+  const isSolidIcon = (type) =>
+    type === 'eagle' || type === 'double' || type === 'albatross' || type === 'triple';
+
+  const ICON_SIZE = 20;
+  const ICON_BORDER = 1.5;
+  const SQUARE_RADIUS = 0;
+
+  const getIconStyle = (type) => {
+    if (type === 'none' || type === 'par') return null;
+
+    const base = {
+      position: 'absolute',
+      inset: 0,
+      border: `${ICON_BORDER}px solid #000`,
+      borderRadius: '50%',
+      boxSizing: 'border-box',
+    };
+
+    if (type === 'birdie') {
+      return { ...base, borderRadius: '50%' };
+    }
+
+    if (type === 'eagle') {
+      return { ...base, borderRadius: '50%', backgroundColor: '#000' };
+    }
+
+    if (type === 'albatross') {
+      return {
+        ...base,
+        borderRadius: '50%',
+        backgroundColor: '#000',
+        boxShadow: `0 0 0 ${ICON_BORDER}px #fff, 0 0 0 ${ICON_BORDER * 2}px #000`,
+      };
+    }
+
+    if (type === 'bogey') {
+      return { ...base, borderRadius: `${SQUARE_RADIUS}px` };
+    }
+
+    if (type === 'double') {
+      return { ...base, borderRadius: `${SQUARE_RADIUS}px`, backgroundColor: '#000' };
+    }
+
+    if (type === 'triple') {
+      return {
+        ...base,
+        borderRadius: `${SQUARE_RADIUS}px`,
+        backgroundColor: '#000',
+        boxShadow: `0 0 0 ${ICON_BORDER}px #fff, 0 0 0 ${ICON_BORDER * 2}px #000`,
+      };
+    }
+
+    return null;
+  };
+
   return (
     <div className="scorecard-container">
       <h1>Mesquite 2026</h1>
@@ -148,13 +248,61 @@ const Scorecard = () => {
             <div className="leaderboard-tournament-table-scroll">
               <table className="leaderboard-table leaderboard-table-tournament">
                 <thead>
-                  <tr className="leaderboard-header-row">
+                  <tr className="leaderboard-header-row" style={{ borderBottom: 'none', borderBottomWidth: 0, fontSize: '12px', height: '24px' }}>
                     {/* Removed position column */}
-                    <th className="leaderboard-th leaderboard-th-name leaderboard-th-tournament-name" style={{paddingLeft: '18px'}}>Player</th>
+                    <th className="leaderboard-th leaderboard-th-name leaderboard-th-tournament-name" style={{paddingLeft: '18px'}}>Hole</th>
                     {scorecardData[0].scores && scorecardData[0].scores.map((_, idx) => (
-                      <th className="leaderboard-th leaderboard-th-tournament-round" key={idx}>{idx + 1}</th>
+                      <React.Fragment key={idx}>
+                        <th className="leaderboard-th leaderboard-th-tournament-round">{idx + 1}</th>
+                        {idx === 8 && (
+                          <th className="leaderboard-th leaderboard-th-tournament-total" style={{ borderRadius: 0 }}>Out</th>
+                        )}
+                        {idx === 17 && (
+                          <th className="leaderboard-th leaderboard-th-tournament-total" style={{ borderRadius: 0 }}>In</th>
+                        )}
+                      </React.Fragment>
                     ))}
                     <th className="leaderboard-th leaderboard-th-tournament-total">Total</th>
+                  </tr>
+                  <tr className="leaderboard-header-row" style={{ borderTop: 'none', fontSize: '12px', height: '24px' }}>
+                    <th className="leaderboard-th leaderboard-th-name leaderboard-th-tournament-name" style={{paddingLeft: '18px'}}>Par</th>
+                    {scorecardData[0].scores && scorecardData[0].scores.map((_, idx) => {
+                      const par = getHolePar(selectedCourseData, idx);
+                      const frontTotal = scorecardData[0].scores
+                        ? scorecardData[0].scores
+                          .slice(0, 9)
+                          .reduce((sum, __, i) => sum + (getHolePar(selectedCourseData, i) || 0), 0)
+                        : '';
+                      const backTotal = scorecardData[0].scores
+                        ? scorecardData[0].scores
+                          .slice(9, 18)
+                          .reduce((sum, __, i) => sum + (getHolePar(selectedCourseData, i + 9) || 0), 0)
+                        : '';
+                      const totalPar = scorecardData[0].scores
+                        ? scorecardData[0].scores
+                          .slice(0, 18)
+                          .reduce((sum, __, i) => sum + (getHolePar(selectedCourseData, i) || 0), 0)
+                        : '';
+
+                      return (
+                        <React.Fragment key={idx}>
+                          <th className="leaderboard-th leaderboard-th-tournament-round">{par ?? ''}</th>
+                          {idx === 8 && (
+                            <th className="leaderboard-th leaderboard-th-tournament-total" style={{ borderRadius: 0 }}>{frontTotal}</th>
+                          )}
+                          {idx === 17 && (
+                            <th className="leaderboard-th leaderboard-th-tournament-total" style={{ borderRadius: 0 }}>{backTotal}</th>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                    <th className="leaderboard-th leaderboard-th-tournament-total" style={{ borderRadius: 0 }}>{
+                      scorecardData[0].scores
+                        ? scorecardData[0].scores
+                          .slice(0, 18)
+                          .reduce((sum, __, i) => sum + (getHolePar(selectedCourseData, i) || 0), 0)
+                        : ''
+                    }</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -162,9 +310,54 @@ const Scorecard = () => {
                     <tr key={idx} className={idx % 2 === 0 ? 'leaderboard-row-even' : 'leaderboard-row-odd'}>
                       {/* Removed position cell */}
                       <td className="leaderboard-td leaderboard-td-name leaderboard-td-tournament-name" style={{paddingLeft: '18px'}}>{round.playerName || round.playerId}</td>
-                      {round.scores && round.scores.map((score, i) => (
-                        <td className="leaderboard-td leaderboard-td-tournament-round" key={i}>{score === 0 ? '' : score}</td>
-                      ))}
+                      {round.scores && round.scores.map((score, i) => {
+                        const par = getHolePar(selectedCourseData, i);
+                        const iconType = getIconType(score, par);
+                        const iconLabel = getIconLabel(iconType);
+                        const solid = isSolidIcon(iconType);
+                        const iconStyle = getIconStyle(iconType);
+                        const outTotal = Array.isArray(round.scores)
+                          ? round.scores.slice(0, 9).reduce((a, b) => a + b, 0)
+                          : '';
+                        const inTotal = Array.isArray(round.scores)
+                          ? round.scores.slice(9, 18).reduce((a, b) => a + b, 0)
+                          : '';
+
+                        return (
+                          <React.Fragment key={i}>
+                            <td className="leaderboard-td leaderboard-td-tournament-round">
+                              {score === 0 ? '' : (
+                                <span
+                                  style={{
+                                    position: 'relative',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    width: `${ICON_SIZE}px`,
+                                    height: `${ICON_SIZE}px`,
+                                    lineHeight: `${ICON_SIZE}px`,
+                                    fontWeight: 600,
+                                    fontSize: '14px',
+                                    color: solid ? '#fff' : 'inherit',
+                                  }}
+                                  aria-label={iconLabel ? `${iconLabel}: ${score}` : `Score: ${score}`}
+                                >
+                                  <span style={{ position: 'relative', zIndex: 1 }}>{score}</span>
+                                  {iconStyle && (
+                                    <span aria-hidden="true" style={iconStyle} />
+                                  )}
+                                </span>
+                              )}
+                            </td>
+                            {i === 8 && (
+                              <td className="leaderboard-td leaderboard-td-tournament-total">{outTotal}</td>
+                            )}
+                            {i === 17 && (
+                              <td className="leaderboard-td leaderboard-td-tournament-total">{inTotal}</td>
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
                       <td className="leaderboard-td leaderboard-td-tournament-total">{Array.isArray(round.scores) ? round.scores.reduce((a, b) => a + b, 0) : ''}</td>
                     </tr>
                   ))}
