@@ -23,6 +23,9 @@ async function getPlayerTotalScore(player, course) {
 function RoundSummary({ players, course, onEditRound, onSubmitRound }) {
     const [deleting, setDeleting] = useState(false);
     const [totalScores, setTotalScores] = useState({});
+    const parTotal = Array.isArray(course?.pars)
+        ? course.pars.reduce((sum, val) => sum + (typeof val === 'number' ? val : 0), 0)
+        : 0;
 
     useEffect(() => {
         const fetchScores = async () => {
@@ -86,22 +89,43 @@ function RoundSummary({ players, course, onEditRound, onSubmitRound }) {
 
     return (
         <div className="round-finished-message">
-            <h1>{course.name}</h1>
+            <div className="hole-header">
+                <h1 className="hole-header-title">{course.name}</h1>
+                <h2 className="hole-header-sub">Round Summary</h2>
+            </div>
             <div>
-                <ul style={{ listStyle: 'none', padding: 0 }}>
-                    {players && players.length > 0 ? (
-                        players.map((p, idx) => (
-                            <li key={idx} style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
-                                <div style={{ flex: 1 }}>
-                                    <span className="player-name">{p.name || `Player ${idx + 1}`}</span>
-                                </div>
-                                <div style={{ fontWeight: 'bold' }}>Total: {totalScores[p.playerId] !== undefined ? totalScores[p.playerId] : 'Calculating...'}</div>
-                            </li>
-                        ))
-                    ) : (
-                        <li>No players</li>
-                    )}
-                </ul>
+                {players && players.length > 0 ? (
+                    <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+                        <thead>
+                            <tr style={{ textAlign: 'left', borderBottom: '1px solid #e5e7eb' }}>
+                                <th style={{ padding: '8px 0' }}>Player</th>
+                                <th style={{ padding: '8px 0', textAlign: 'right', width: 90 }}>Total</th>
+                                <th style={{ padding: '8px 0', textAlign: 'center', width: 80 }}>To Par</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {players.map((p, idx) => {
+                                const total = totalScores[p.playerId];
+                                const toPar = typeof total === 'number' ? total - parTotal : null;
+                                return (
+                                    <tr key={idx} style={{ borderBottom: '1px solid #f3f4f6' }}>
+                                        <td style={{ padding: '10px 0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                            <span className="player-name">{p.name || `Player ${idx + 1}`}</span>
+                                        </td>
+                                        <td style={{ padding: '10px 0', textAlign: 'right', fontWeight: 'bold', fontSize: '1.2em' }}>
+                                            {total !== undefined ? total : 'Calculating...'}
+                                        </td>
+                                        <td style={{ padding: '10px 0', textAlign: 'center', fontWeight: 'bold', fontSize: '1.1em', color: toPar !== null && toPar < 0 ? '#ef4444' : '#6b7280' }}>
+                                            {toPar === null ? '' : (toPar === 0 ? 'E' : `${toPar > 0 ? '+' : ''}${toPar}`)}
+                                        </td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                ) : (
+                    <div>No players</div>
+                )}
             </div>
             <div style={{ display: 'flex', justifyContent: 'center', gap: 16, marginTop: 32 }}>
                 <button className="round-action-btn discard" onClick={handleDiscard} disabled={deleting}>{deleting ? 'Discarding...' : 'Discard Round'}</button>
