@@ -122,11 +122,16 @@ const Scorecard = () => {
   useEffect(() => {
     if (!defaultGroupId || !groups.length) return;
     if (selectedGroup) return;
+    const isDefaultCourse = courses.some(course =>
+      (course.id === selectedCourse || course.courseId === selectedCourse) &&
+      (course.id === defaultCourseId || course.courseId === defaultCourseId)
+    );
+    if (!isDefaultCourse) return;
     const groupExists = groups.some(group => group.groupId === defaultGroupId);
     if (groupExists) {
       setSelectedGroup(defaultGroupId);
     }
-  }, [groups, defaultGroupId, selectedGroup]);
+  }, [groups, defaultGroupId, selectedGroup, courses, selectedCourse, defaultCourseId]);
 
 
   // Fetch scorecard data when both course and group are selected
