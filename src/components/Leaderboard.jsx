@@ -106,6 +106,14 @@ function Leaderboard({ currentUser }) {
     defaultLeaderboardView();
   }, [currentUser, courses]);
 
+  useEffect(() => {
+    if (mode === 'tournament') {
+      setSortConfig({ key: 'total', direction: 'asc' });
+    } else if (mode === 'live') {
+      setSortConfig({ key: 'scoreToPar', direction: 'asc' });
+    }
+  }, [mode]);
+
   const sortedRounds = React.useMemo(() => {
     if (!rounds) return [];
     return [...rounds].sort((a, b) => {
@@ -149,8 +157,17 @@ function Leaderboard({ currentUser }) {
   const completedCourseIds = Array.from(
     new Set(completedRounds.map(r => r.courseId))
   );
-  // Only show courses that have completed rounds
-  const completedCourses = courses.filter(c => completedCourseIds.includes(c.courseId));
+  // Only show courses that have completed rounds, sorted by tripRoundID asc
+  const completedCourses = courses
+    .filter(c => completedCourseIds.includes(c.courseId))
+    .sort((a, b) => {
+      const aTrip = Number(a.tripRoundID);
+      const bTrip = Number(b.tripRoundID);
+      if (Number.isNaN(aTrip) && Number.isNaN(bTrip)) return 0;
+      if (Number.isNaN(aTrip)) return 1;
+      if (Number.isNaN(bTrip)) return -1;
+      return aTrip - bTrip;
+    });
 
   const sortedTournamentPlayers = React.useMemo(() => {
     if (!completedRounds || !completedCourses) return [];
@@ -402,7 +419,7 @@ function Leaderboard({ currentUser }) {
                         className="leaderboard-th leaderboard-th-tournament-round"
                         onClick={() => handleTournamentSort(course.courseId)}
                       >
-                        <span>{`R${idx + 1}`}</span>
+                        <span>{course.tripRoundID ? `R${course.tripRoundID}` : `R${idx + 1}`}</span>
                       </th>
                     ))}
                     <th
