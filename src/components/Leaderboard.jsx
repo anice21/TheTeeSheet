@@ -6,7 +6,7 @@ import { db } from '../firebase';
 import { collection, getDocs, query, where } from 'firebase/firestore';
 
 
-function Leaderboard() {
+function Leaderboard({ currentUser }) {
   const [courses, setCourses] = useState([]);
   const [selectedCourse, setSelectedCourse] = useState(null);
   const [rounds, setRounds] = useState([]);
@@ -17,6 +17,7 @@ function Leaderboard() {
   // For tournament leaderboard: key can be 'name', 'total', or courseId
   const [mode, setMode] = useState('live'); // 'live' or 'tournament'
   const [scoreType, setScoreType] = useState('gross');
+  const [isDefaultingView, setIsDefaultingView] = useState(true);
 
   useEffect(() => {
     const fetchCourses = async () => {
@@ -38,12 +39,8 @@ function Leaderboard() {
     fetchAllRounds();
   }, []);
 
-  const handleSelectedCourse = async (e) => {
-    const courseId = e.target.value;
-    const courseObj = courses.find(c => String(c.courseId) === String(courseId));
-    setSelectedCourse(courseObj || null);
+  const fetchRoundsForCourse = async (courseObj) => {
     if (courseObj) {
-      // Fetch rounds for this course
       const q = query(collection(db, 'rounds'), where('courseId', '==', courseObj.courseId));
       const querySnapshot = await getDocs(q);
       const roundsData = querySnapshot.docs
@@ -54,6 +51,60 @@ function Leaderboard() {
       setRounds([]);
     }
   };
+
+  const handleSelectedCourse = async (e) => {
+    const courseId = e.target.value;
+    const courseObj = courses.find(c => String(c.courseId) === String(courseId));
+    setSelectedCourse(courseObj || null);
+    await fetchRoundsForCourse(courseObj || null);
+  };
+
+  useEffect(() => {
+    const defaultLeaderboardView = async () => {
+      if (!currentUser || courses.length === 0) {
+        if (!currentUser) {
+          setIsDefaultingView(false);
+        }
+        return;
+      }
+
+      setIsDefaultingView(true);
+      const roundsRef = collection(db, 'rounds');
+      const primaryQuery = query(
+        roundsRef,
+        where('playerID', '==', currentUser.uid),
+        where('isRoundFinished', '==', false)
+      );
+      let querySnapshot = await getDocs(primaryQuery);
+
+      if (querySnapshot.empty) {
+        const fallbackQuery = query(
+          roundsRef,
+          where('playerId', '==', currentUser.uid),
+          where('isRoundFinished', '==', false)
+        );
+        querySnapshot = await getDocs(fallbackQuery);
+      }
+
+      if (querySnapshot.empty) {
+        setMode('tournament');
+        setIsDefaultingView(false);
+        return;
+      }
+
+      const inProgressRound = querySnapshot.docs
+        .map(doc => ({ ...doc.data(), id: doc.id }))
+        .find(round => round.isActive === true) || querySnapshot.docs[0].data();
+
+      const courseObj = courses.find(c => String(c.courseId) === String(inProgressRound.courseId));
+      setMode('live');
+      setSelectedCourse(courseObj || null);
+      await fetchRoundsForCourse(courseObj || null);
+      setIsDefaultingView(false);
+    };
+
+    defaultLeaderboardView();
+  }, [currentUser, courses]);
 
   const sortedRounds = React.useMemo(() => {
     if (!rounds) return [];
@@ -170,6 +221,15 @@ function Leaderboard() {
       return { key, direction: 'asc' };
     });
   };
+
+  if (isDefaultingView) {
+    return (
+      <div className="leaderboard-container">
+        <h1>Mesquite 2026</h1>
+        <p className="leaderboard-empty-msg">Loading leaderboard...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="leaderboard-container">

@@ -78,6 +78,22 @@ function RoundStart({ currentUserID, currentHole, setCurrentHole, selectedCourse
         setSelectedPlayers((prev) => prev.filter((_, i) => i !== index));
     };
 
+    const sortedCourses = [...courses].sort((a, b) => {
+        const aId = a.tripRoundID ?? '';
+        const bId = b.tripRoundID ?? '';
+        if (aId === bId) {
+            return (a.name || '').localeCompare(b.name || '');
+        }
+        if (aId === '') return 1;
+        if (bId === '') return -1;
+        const aNum = Number(aId);
+        const bNum = Number(bId);
+        if (!Number.isNaN(aNum) && !Number.isNaN(bNum)) {
+            return aNum - bNum;
+        }
+        return String(aId).localeCompare(String(bId));
+    });
+
     if (roundStarted) {
         return (
             <Hole
@@ -137,9 +153,9 @@ function RoundStart({ currentUserID, currentHole, setCurrentHole, selectedCourse
                 <select className="select-dropdown" name="selectedCourse" value={selectedCourse ? selectedCourse.courseId : ""}
                     onChange={handleSelectedCourse}>
                     <option value="" disabled>Select a Course</option>
-                    {courses.map((course) => (
+                    {sortedCourses.map((course) => (
                         <option key={String(course.courseId)} value={course.courseId}>
-                            {course.name}
+                            {course.tripRoundID ? `R${course.tripRoundID}: ` : ''}{course.name}
                         </option>
                     ))}
                 </select>

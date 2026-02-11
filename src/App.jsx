@@ -201,7 +201,7 @@ function App() {
         ) : view === 'scorecard' ? (
           <Scorecard />
         ) : (
-          <Leaderboard/>
+          <Leaderboard currentUser={user} />
         )}
       </main>
     </div>

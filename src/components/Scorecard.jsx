@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { db } from '../firebase';
-import { collection, getDocs } from 'firebase/firestore';
+import { collection, getDocs, query, where } from 'firebase/firestore';
+import { getAuth } from 'firebase/auth';
 
 const Scorecard = () => {
   const [courses, setCourses] = useState([]);
@@ -11,6 +12,8 @@ const Scorecard = () => {
   const [loadingGroups, setLoadingGroups] = useState(false);
   const [scorecardData, setScorecardData] = useState(null);
   const [loadingScorecard, setLoadingScorecard] = useState(false);
+  const [defaultCourseId, setDefaultCourseId] = useState(null);
+  const [defaultGroupId, setDefaultGroupId] = useState(null);
 
   useEffect(() => {
     async function fetchCourses() {
@@ -29,6 +32,51 @@ const Scorecard = () => {
     fetchCourses();
   }, []);
 
+  useEffect(() => {
+    async function fetchInProgressRound() {
+      const auth = getAuth();
+      const currentUser = auth.currentUser;
+      if (!currentUser) return;
+
+      try {
+        const roundsRef = collection(db, 'rounds');
+        const primaryQuery = query(
+          roundsRef,
+          where('playerID', '==', currentUser.uid),
+          where('isRoundFinished', '==', false)
+        );
+
+        let querySnapshot = await getDocs(primaryQuery);
+        if (querySnapshot.empty) {
+          const fallbackQuery = query(
+            roundsRef,
+            where('playerId', '==', currentUser.uid),
+            where('isRoundFinished', '==', false)
+          );
+          querySnapshot = await getDocs(fallbackQuery);
+        }
+
+        if (querySnapshot.empty) return;
+
+        const roundData = querySnapshot.docs[0].data();
+        setDefaultCourseId(roundData.courseId || null);
+        setDefaultGroupId(roundData.groupId || null);
+      } catch (error) {
+        console.error('Error fetching in-progress round for scorecard:', error);
+      }
+    }
+
+    fetchInProgressRound();
+  }, []);
+
+  useEffect(() => {
+    if (!defaultCourseId || selectedCourse) return;
+    const courseMatch = courses.find(course => course.id === defaultCourseId || course.courseId === defaultCourseId);
+    if (courseMatch) {
+      setSelectedCourse(courseMatch.id);
+    }
+  }, [courses, defaultCourseId, selectedCourse]);
+
   // Fetch groups when a course is selected
   useEffect(() => {
     async function fetchGroups() {
@@ -42,9 +90,12 @@ const Scorecard = () => {
         // Fetch rounds for the selected course
         const querySnapshot = await getDocs(collection(db, 'rounds'));
         const groupMap = new Map();
+        const courseMatch = courses.find(course => course.id === selectedCourse || course.courseId === selectedCourse) || null;
+        const selectedCourseKey = courseMatch?.courseId || selectedCourse;
+
         querySnapshot.docs.forEach(doc => {
           const data = doc.data();
-          if (data.courseId === selectedCourse && data.groupId && data.isActive) {
+          if (data.courseId === selectedCourseKey && data.groupId && data.isActive) {
             if (!groupMap.has(data.groupId)) {
               groupMap.set(data.groupId, []);
             }
@@ -66,7 +117,17 @@ const Scorecard = () => {
       setLoadingGroups(false);
     }
     fetchGroups();
-  }, [selectedCourse]);
+  }, [selectedCourse, courses]);
+
+  useEffect(() => {
+    if (!defaultGroupId || !groups.length) return;
+    if (selectedGroup) return;
+    const groupExists = groups.some(group => group.groupId === defaultGroupId);
+    if (groupExists) {
+      setSelectedGroup(defaultGroupId);
+    }
+  }, [groups, defaultGroupId, selectedGroup]);
+
 
   // Fetch scorecard data when both course and group are selected
   useEffect(() => {
@@ -79,9 +140,11 @@ const Scorecard = () => {
       try {
         // Fetch all rounds for the selected group and course
         const querySnapshot = await getDocs(collection(db, 'rounds'));
+        const courseMatch = courses.find(course => course.id === selectedCourse || course.courseId === selectedCourse) || null;
+        const selectedCourseKey = courseMatch?.courseId || selectedCourse;
         const rounds = querySnapshot.docs
           .map(doc => doc.data())
-          .filter(r => r.courseId === selectedCourse && r.groupId === selectedGroup);
+          .filter(r => r.courseId === selectedCourseKey && r.groupId === selectedGroup);
         setScorecardData(rounds);
       } catch (error) {
         console.error('Error fetching scorecard:', error);
@@ -90,7 +153,7 @@ const Scorecard = () => {
       setLoadingScorecard(false);
     }
     fetchScorecard();
-  }, [selectedCourse, selectedGroup]);
+  }, [selectedCourse, selectedGroup, courses]);
 
   const selectedCourseData =
     courses.find(c => c.id === selectedCourse || c.courseId === selectedCourse) || null;
@@ -193,6 +256,22 @@ const Scorecard = () => {
     return null;
   };
 
+  const sortedCourses = [...courses].sort((a, b) => {
+    const aId = a.tripRoundID ?? '';
+    const bId = b.tripRoundID ?? '';
+    if (aId === bId) {
+      return (a.name || '').localeCompare(b.name || '');
+    }
+    if (aId === '') return 1;
+    if (bId === '') return -1;
+    const aNum = Number(aId);
+    const bNum = Number(bId);
+    if (!Number.isNaN(aNum) && !Number.isNaN(bNum)) {
+      return aNum - bNum;
+    }
+    return String(aId).localeCompare(String(bId));
+  });
+
   return (
     <div className="scorecard-container">
       <h1>Mesquite 2026</h1>
@@ -210,9 +289,9 @@ const Scorecard = () => {
           disabled={loading || courses.length === 0}
         >
           <option value="" disabled>Select a Course</option>
-          {courses.map(course => (
+          {sortedCourses.map(course => (
             <option key={course.id} value={course.id}>
-              {course.name || course.id}
+              {course.tripRoundID ? `R${course.tripRoundID}: ` : ''}{course.name}
             </option>
           ))}
         </select>
