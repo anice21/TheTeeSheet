@@ -19,19 +19,93 @@ function Hole({ course, players, currentHole: propCurrentHole, setCurrentHole: p
         })
     );
 
-    // If players change (shouldn't mid-round), reset allScores
+    // If players change (shouldn't mid-round), reset allScores and hydrate from Firestore
     useEffect(() => {
-        setAllScores(
-            players.map((p) => Array.from({ length: 18 }, (_, h) => getPlayerDefaultScore(p, h)))
-        );
+        let isMounted = true;
+
+        const hydrateScores = async () => {
+            if (!players || players.length === 0 || !course?.courseId) {
+                if (isMounted) {
+                    setAllScores(
+                        players.map((p) => Array.from({ length: 18 }, (_, h) => getPlayerDefaultScore(p, h)))
+                    );
+                }
+                return;
+            }
+
+            try {
+                const fetchedScores = await Promise.all(
+                    players.map(async (p) => {
+                        const q = query(
+                            collection(db, "rounds"),
+                            where("courseId", "==", String(course.courseId)),
+                            where("playerId", "==", String(p.playerId))
+                        );
+                        const querySnapshot = await getDocs(q);
+                        if (querySnapshot.empty) {
+                            return Array.from({ length: 18 }, (_, h) => getPlayerDefaultScore(p, h));
+                        }
+                        const roundData = querySnapshot.docs[0].data();
+                        if (Array.isArray(roundData.scores)) {
+                            return roundData.scores.map((val, h) =>
+                                typeof val === 'number' && val > 0
+                                    ? val
+                                    : (course?.pars?.[h] ?? 1)
+                            );
+                        }
+                        return Array.from({ length: 18 }, (_, h) => getPlayerDefaultScore(p, h));
+                    })
+                );
+
+                if (isMounted) {
+                    setAllScores(fetchedScores);
+                }
+            } catch (err) {
+                console.error("Error hydrating scores:", err);
+                if (isMounted) {
+                    setAllScores(
+                        players.map((p) => Array.from({ length: 18 }, (_, h) => getPlayerDefaultScore(p, h)))
+                    );
+                }
+            }
+        };
+
+        hydrateScores();
+
+        return () => {
+            isMounted = false;
+        };
         // eslint-disable-next-line
-    }, [players]);
+    }, [players, course?.courseId]);
 
     // If currentHole changes, nothing to do: allScores already has all holes
 
     function getPlayerDefaultScore(player, hole) {
         const saved = player.scores?.[hole];
         return (typeof saved !== 'undefined' && saved !== 0) ? saved : (course?.pars?.[hole] ?? 1);
+    }
+
+    async function saveHoleScore(player, holeIndex, val) {
+        if (!player?.playerId || !course?.courseId) return;
+        const par = course?.pars?.[holeIndex] ?? 0;
+        try {
+            const q = query(
+                collection(db, "rounds"),
+                where("courseId", "==", String(course.courseId)),
+                where("playerId", "==", String(player.playerId))
+            );
+            const querySnapshot = await getDocs(q);
+            await Promise.all(querySnapshot.docs.map(async (docSnap) => {
+                const docRef = docSnap.ref;
+                const scores = docSnap.data().scores ? [...docSnap.data().scores] : Array(18).fill(0);
+                scores[holeIndex] = val;
+                const scoreToPar = docSnap.data().scoreToPar ? [...docSnap.data().scoreToPar] : Array(18).fill(0);
+                scoreToPar[holeIndex] = val - par;
+                await updateDoc(docRef, { scores, scoreToPar });
+            }));
+        } catch (err) {
+            console.error("Error saving score in Firestore:", err);
+        }
     }
 
     async function nextHole() {
@@ -119,6 +193,7 @@ function Hole({ course, players, currentHole: propCurrentHole, setCurrentHole: p
                                                 next[i][currentHole] = val;
                                                 return next;
                                             });
+                                            saveHoleScore(p, currentHole, val);
                                         }}
                                     />
                                 </div>
