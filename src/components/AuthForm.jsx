@@ -57,7 +57,7 @@ export default function AuthForm({ onAuth }) {
   return (
     <div className="auth-bg-center">
       <form onSubmit={handleSubmit} className="auth-form-box">
-        <h1 className="auth-form-main-title">Mesquite 2026</h1>
+        <h1 className="auth-form-main-title">ScoreCaddy</h1>
         <h2 className="auth-form-title">{isSignUp ? 'Sign Up' : 'Sign In'}</h2>
         {isSignUp && (
           <input
