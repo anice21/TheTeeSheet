@@ -7,7 +7,10 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "migrate": "node scripts/moveDocuments.js",
+    "add-field": "node scripts/addFieldToCollection.js",
+    "update-field": "node scripts/updateFieldInCollection.js"
   },
   "dependencies": {
     "firebase": "^12.6.0",

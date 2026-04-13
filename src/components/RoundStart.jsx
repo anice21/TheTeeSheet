@@ -6,47 +6,74 @@ import { collection, getDocs, addDoc } from "firebase/firestore";
 import { doc, getDoc } from "firebase/firestore";
 
 
-function RoundStart({ currentUserID, currentHole, setCurrentHole, selectedCourse = null, setSelectedCourse = () => {}, roundStarted, setRoundStarted = () => {}, selectedPlayers = [], setSelectedPlayers = () => {}, isRoundFinished = false, setIsRoundFinished = () => {}, setView = () => {}, onSubmitRound = null }) {
+function RoundStart({ currentUserID, currentHole, setCurrentHole, selectedCourse = null, setSelectedCourse = () => {}, roundStarted, setRoundStarted = () => {}, selectedPlayers = [], setSelectedPlayers = () => {}, isRoundFinished = false, setIsRoundFinished = () => {}, setView = () => {}, onSubmitRound = null, selectedTrip = null }) {
     
     const [players, setPlayers] = useState([]);
     const [courses, setCourses] = useState([]);
+    const [roundType, setRoundType] = useState('full');
 
     useEffect(() => {
-        // Fetch courses on mount
+        // Fetch rounds from the selected trip
         const fetchCourses = async () => {
-            const querySnapshot = await getDocs(collection(db, "courses"));
-            const coursesData = querySnapshot.docs
-                .map(doc => ({ ...doc.data(), courseId: doc.id }))
-                .filter(course => course.isActive === true);
-            console.log("All course information from Firestore:", coursesData);
-            setCourses(coursesData);
+            if (!selectedTrip) {
+                setCourses([]);
+                return;
+            }
+            
+            // Get all rounds for this trip
+            const tripRoundsSnapshot = await getDocs(collection(db, "trips", selectedTrip.id, "rounds"));
+            const roundsData = tripRoundsSnapshot.docs.map(doc => ({
+                ...doc.data(),
+                roundId: doc.id,
+                name: doc.data().courseName // Map courseName to name for compatibility
+            }));
+            
+            console.log("Rounds for trip:", roundsData);
+            setCourses(roundsData);
         };
         fetchCourses();
-    }, []);
+    }, [selectedTrip]);
 
     useEffect(() => {
-        // Fetch players only after a course is selected
+        // Fetch players only after a course is selected and trip is selected
         const fetchPlayers = async () => {
-            if (!selectedCourse || !selectedCourse.courseId) {
+            if (!selectedCourse || !selectedCourse.courseId || !selectedTrip) {
                 setPlayers([]);
                 return;
             }
-            // Get only active players
+            
+            // Get players who are part of this trip
+            const tripPlayersSnapshot = await getDocs(collection(db, "trips", selectedTrip.id, "players"));
+            const tripPlayerIds = tripPlayersSnapshot.docs.map(doc => doc.data().playerId);
+            
+            if (tripPlayerIds.length === 0) {
+                setPlayers([]);
+                return;
+            }
+            
+            // Get only active players who are in the trip
             const playersSnapshot = await getDocs(collection(db, "players"));
             const allPlayers = playersSnapshot.docs
                 .map(doc => ({ ...doc.data(), playerId: doc.id }))
-                .filter(player => player.isActive === true);
-            // Get all rounds for this course
-            const roundsSnapshot = await getDocs(collection(db, "rounds"));
+                .filter(player => player.isActive === true && tripPlayerIds.includes(player.playerId));
+            
+            // Get all rounds for this course and trip round
+            const roundsSnapshot = await getDocs(collection(db, "trips", selectedTrip.id, "scores"));
             const rounds = roundsSnapshot.docs.map(doc => doc.data());
-            // Filter out players who already have a round for this course
+            
+            // Filter out players who already have a round for this specific trip round
+            // Check both courseId and tripRoundID to allow same course multiple times in a trip
             const availablePlayers = allPlayers.filter(player => {
-                return !rounds.some(round => round.courseId === selectedCourse.courseId && round.playerId === player.playerId);
+                return !rounds.some(round => 
+                    round.courseId === selectedCourse.courseId && 
+                    round.tripRoundID === selectedCourse.tripRoundID &&
+                    round.playerId === player.playerId
+                );
             });
             setPlayers(availablePlayers);
         };
         fetchPlayers();
-    }, [selectedCourse]);
+    }, [selectedCourse, selectedTrip]);
 
     const addPlayer = () => {
         // create an empty slot for a player select; we'll store a player object here
@@ -58,10 +85,33 @@ function RoundStart({ currentUserID, currentHole, setCurrentHole, selectedCourse
 
 
     function handleSelectedCourse(e) {
-        const courseId = e.target.value;
-        const courseObj = courses.find(c => String(c.courseId) === String(courseId));
-        setSelectedCourse(courseObj || null);
-        console.log("Selected course changed to:", courseObj);
+        const roundId = e.target.value;
+        const roundObj = courses.find(c => String(c.roundId) === String(roundId));
+        
+        // Fetch the full course data including pars
+        if (roundObj && roundObj.courseId) {
+            const fetchCourseDetails = async () => {
+                try {
+                    const courseDoc = await getDoc(doc(db, "courses", roundObj.courseId));
+                    if (courseDoc.exists()) {
+                        const fullCourseData = {
+                            ...courseDoc.data(),
+                            courseId: courseDoc.id,
+                            tripRoundID: roundObj.tripRoundID,
+                            roundId: roundObj.roundId,
+                            name: roundObj.courseName || courseDoc.data().name
+                        };
+                        setSelectedCourse(fullCourseData);
+                        console.log("Selected course changed to:", fullCourseData);
+                    }
+                } catch (err) {
+                    console.error("Error fetching course details:", err);
+                }
+            };
+            fetchCourseDetails();
+        } else {
+            setSelectedCourse(null);
+        }
     }
 
     const selectPlayer = (index, e) => {
@@ -104,6 +154,8 @@ function RoundStart({ currentUserID, currentHole, setCurrentHole, selectedCourse
                 isRoundFinished={isRoundFinished}
                 setIsRoundFinished={setIsRoundFinished}
                 onSubmitRound={onSubmitRound ? onSubmitRound : () => setView('leaderboard')}
+                selectedTrip={selectedTrip}
+                roundType={roundType}
             />
         );
     }
@@ -116,6 +168,10 @@ function RoundStart({ currentUserID, currentHole, setCurrentHole, selectedCourse
     // Save round-player info to Firestore and start round
     const handleStartRound = async (e) => {
         e.preventDefault();
+        if (!selectedTrip?.id) {
+            console.error("No trip selected");
+            return;
+        }
         // Generate a random groupId for this group
         const groupId = Math.random().toString(36).substring(2, 12) + Date.now().toString(36);
         try {
@@ -123,7 +179,7 @@ function RoundStart({ currentUserID, currentHole, setCurrentHole, selectedCourse
                 if (!player || !player.playerId) return null;
                 console.log("Player ID:", player.playerId);
                 console.log("Current User ID:", currentUserID);
-                return addDoc(collection(db, "rounds"), {
+                return addDoc(collection(db, "trips", selectedTrip.id, "scores"), {
                     courseId: selectedCourse.courseId,
                     courseName: selectedCourse.name || "Unnamed Course",
                     playerId: player.playerId,
@@ -134,6 +190,7 @@ function RoundStart({ currentUserID, currentHole, setCurrentHole, selectedCourse
                     isRoundFinished: false,
                     isActive: true,
                     tripRoundID: selectedCourse.tripRoundID || null,
+                    roundType: roundType,
                     scores: Array(18).fill(0),
                     scoreToPar: Array(18).fill(0)
                 });
@@ -145,21 +202,49 @@ function RoundStart({ currentUserID, currentHole, setCurrentHole, selectedCourse
         setRoundStarted(true);
     };
 
+    // Show message if no trip is selected
+    if (!selectedTrip) {
+        return (
+            <div>
+                <h1>Start a Round</h1>
+                <p style={{ marginTop: 16, color: '#666' }}>
+                    Please select a trip first to start a round. Go to the menu and choose "Select Trip".
+                </p>
+            </div>
+        );
+    }
+
     return (
         <div>
-           <h1>Mesquite 2026</h1>
+           <h1>{selectedTrip.name}</h1>
             <label>
                 Pick a Course:
-                <select className="select-dropdown" name="selectedCourse" value={selectedCourse ? selectedCourse.courseId : ""}
+                <select className="select-dropdown" name="selectedCourse" value={selectedCourse ? selectedCourse.roundId : ""}
                     onChange={handleSelectedCourse}>
                     <option value="" disabled>Select a Course</option>
                     {sortedCourses.map((course) => (
-                        <option key={String(course.courseId)} value={course.courseId}>
+                        <option key={String(course.roundId)} value={course.roundId}>
                             {course.tripRoundID ? `R${course.tripRoundID}: ` : ''}{course.name}
                         </option>
                     ))}
                 </select>
+            </label>
 
+            <label>
+                Round Type:
+                <select 
+                    className="select-dropdown" 
+                    name="roundType" 
+                    value={roundType}
+                    onChange={(e) => setRoundType(e.target.value)}
+                >
+                    <option value="full">Full Round</option>
+                    <option value="front9">Front 9</option>
+                    <option value="back9">Back 9</option>
+                </select>
+            </label>
+
+            <label>
                 <div style={{ marginTop: 12 }}>
                     <strong>Players:</strong>
 
@@ -193,6 +278,7 @@ function RoundStart({ currentUserID, currentHole, setCurrentHole, selectedCourse
                     </button>
                     <button onClick={handleStartRound}
                         disabled={selectedCourse === null ||
+                            !roundType ||
                             selectedPlayers.length === 0 ||
                             selectedPlayers.some(p => !p || !p.playerId)}>
                         Start Round

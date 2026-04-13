@@ -3,7 +3,7 @@ import { db } from '../firebase';
 import { collection, getDocs, query, where } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
 
-const Scorecard = () => {
+const Scorecard = ({ selectedTrip }) => {
   const [courses, setCourses] = useState([]);
   const [selectedCourse, setSelectedCourse] = useState('');
   const [groups, setGroups] = useState([]); // [{ groupId, playerNames: [] }]
@@ -14,34 +14,45 @@ const Scorecard = () => {
   const [loadingScorecard, setLoadingScorecard] = useState(false);
   const [defaultCourseId, setDefaultCourseId] = useState(null);
   const [defaultGroupId, setDefaultGroupId] = useState(null);
+  const [fullCourseData, setFullCourseData] = useState(null);
 
   useEffect(() => {
     async function fetchCourses() {
+      if (!selectedTrip) {
+        setCourses([]);
+        setLoading(false);
+        return;
+      }
+      
       setLoading(true);
       try {
-        const querySnapshot = await getDocs(collection(db, 'courses'));
-        const courseList = querySnapshot.docs
-          .map(doc => ({ id: doc.id, ...doc.data() }))
-          .filter(course => course.isActive);
-        setCourses(courseList);
+        // Get all rounds for this trip
+        const tripRoundsSnapshot = await getDocs(collection(db, 'trips', selectedTrip.id, 'rounds'));
+        const tripRounds = tripRoundsSnapshot.docs.map(doc => ({ 
+          ...doc.data(), 
+          id: doc.id,
+          name: doc.data().courseName // Use courseName as name for consistency
+        }));
+        
+        setCourses(tripRounds);
       } catch (error) {
         console.error('Error fetching courses:', error);
       }
       setLoading(false);
     }
     fetchCourses();
-  }, []);
+  }, [selectedTrip]);
 
   useEffect(() => {
     async function fetchInProgressRound() {
       const auth = getAuth();
       const currentUser = auth.currentUser;
-      if (!currentUser) return;
+      if (!currentUser || !selectedTrip) return;
 
       try {
-        const roundsRef = collection(db, 'rounds');
+        const scoresRef = collection(db, 'trips', selectedTrip.id, 'scores');
         const primaryQuery = query(
-          roundsRef,
+          scoresRef,
           where('playerID', '==', currentUser.uid),
           where('isRoundFinished', '==', false)
         );
@@ -49,7 +60,7 @@ const Scorecard = () => {
         let querySnapshot = await getDocs(primaryQuery);
         if (querySnapshot.empty) {
           const fallbackQuery = query(
-            roundsRef,
+            scoresRef,
             where('playerId', '==', currentUser.uid),
             where('isRoundFinished', '==', false)
           );
@@ -67,7 +78,7 @@ const Scorecard = () => {
     }
 
     fetchInProgressRound();
-  }, []);
+  }, [selectedTrip]);
 
   useEffect(() => {
     if (!defaultCourseId || selectedCourse) return;
@@ -80,22 +91,22 @@ const Scorecard = () => {
   // Fetch groups when a course is selected
   useEffect(() => {
     async function fetchGroups() {
-      if (!selectedCourse) {
+      if (!selectedCourse || !selectedTrip) {
         setGroups([]);
         setSelectedGroup('');
         return;
       }
       setLoadingGroups(true);
       try {
-        // Fetch rounds for the selected course
-        const querySnapshot = await getDocs(collection(db, 'rounds'));
+        // Fetch scores for the selected course from trip scores subcollection
+        const querySnapshot = await getDocs(collection(db, 'trips', selectedTrip.id, 'scores'));
         const groupMap = new Map();
-        const courseMatch = courses.find(course => course.id === selectedCourse || course.courseId === selectedCourse) || null;
-        const selectedCourseKey = courseMatch?.courseId || selectedCourse;
+        const courseMatch = courses.find(course => course.id === selectedCourse) || null;
+        const selectedTripRoundID = courseMatch?.tripRoundID;
 
         querySnapshot.docs.forEach(doc => {
           const data = doc.data();
-          if (data.courseId === selectedCourseKey && data.groupId && data.isActive) {
+          if (data.tripRoundID === selectedTripRoundID && data.groupId && data.isActive) {
             if (!groupMap.has(data.groupId)) {
               groupMap.set(data.groupId, []);
             }
@@ -117,7 +128,7 @@ const Scorecard = () => {
       setLoadingGroups(false);
     }
     fetchGroups();
-  }, [selectedCourse, courses]);
+  }, [selectedCourse, courses, selectedTrip]);
 
   useEffect(() => {
     if (!defaultGroupId || !groups.length) return;
@@ -133,23 +144,53 @@ const Scorecard = () => {
     }
   }, [groups, defaultGroupId, selectedGroup, courses, selectedCourse, defaultCourseId]);
 
+  // Fetch full course data when a round is selected
+  useEffect(() => {
+    async function fetchFullCourseData() {
+      if (!selectedCourse) {
+        setFullCourseData(null);
+        return;
+      }
+      
+      try {
+        const roundData = courses.find(c => c.id === selectedCourse);
+        if (!roundData || !roundData.courseId) {
+          setFullCourseData(null);
+          return;
+        }
+        
+        // Fetch full course details from courses collection
+        const coursesSnapshot = await getDocs(collection(db, 'courses'));
+        const fullCourse = coursesSnapshot.docs
+          .map(doc => ({ ...doc.data(), id: doc.id }))
+          .find(course => course.id === roundData.courseId || course.courseId === roundData.courseId);
+        
+        setFullCourseData(fullCourse || null);
+      } catch (error) {
+        console.error('Error fetching full course data:', error);
+        setFullCourseData(null);
+      }
+    }
+    
+    fetchFullCourseData();
+  }, [selectedCourse, courses]);
 
   // Fetch scorecard data when both course and group are selected
   useEffect(() => {
     async function fetchScorecard() {
-      if (!selectedCourse || !selectedGroup) {
+      if (!selectedCourse || !selectedGroup || !selectedTrip) {
         setScorecardData(null);
         return;
       }
       setLoadingScorecard(true);
       try {
-        // Fetch all rounds for the selected group and course
-        const querySnapshot = await getDocs(collection(db, 'rounds'));
-        const courseMatch = courses.find(course => course.id === selectedCourse || course.courseId === selectedCourse) || null;
-        const selectedCourseKey = courseMatch?.courseId || selectedCourse;
+        // Fetch all scores for the selected group and round from trip scores subcollection
+        const querySnapshot = await getDocs(collection(db, 'trips', selectedTrip.id, 'scores'));
+        const courseMatch = courses.find(course => course.id === selectedCourse) || null;
+        const selectedTripRoundID = courseMatch?.tripRoundID;
         const rounds = querySnapshot.docs
           .map(doc => doc.data())
-          .filter(r => r.courseId === selectedCourseKey && r.groupId === selectedGroup);
+          .filter(r => r.tripRoundID === selectedTripRoundID && r.groupId === selectedGroup && r.isActive);
         setScorecardData(rounds);
       } catch (error) {
         console.error('Error fetching scorecard:', error);
@@ -158,10 +199,9 @@ const Scorecard = () => {
       setLoadingScorecard(false);
     }
     fetchScorecard();
-  }, [selectedCourse, selectedGroup, courses]);
+  }, [selectedCourse, selectedGroup, courses, selectedTrip]);
 
-  const selectedCourseData =
-    courses.find(c => c.id === selectedCourse || c.courseId === selectedCourse) || null;
+  const selectedCourseData = fullCourseData;
 
   const getHolePar = (course, holeIndex) => {
     if (!course) return null;
@@ -279,7 +319,7 @@ const Scorecard = () => {
 
   return (
     <div className="scorecard-container">
-      <h1>Mesquite 2026</h1>
+      <h1>{selectedTrip?.name || 'No Trip Selected'}</h1>
       <div style={{ marginBottom: '1rem' }}>
         <label htmlFor="course-select">Select Course:</label>
         <select
@@ -330,18 +370,47 @@ const Scorecard = () => {
           <div className="leaderboard-tournament-table-wrapper">
             <h3 className="leaderboard-tournament-title">Scorecard</h3>
             <div className="leaderboard-tournament-table-scroll">
+              {(() => {
+                // Get roundType from first score record
+                const roundType = scorecardData[0]?.roundType || 'full';
+                
+                // Determine which holes to display
+                let holesToDisplay;
+                let startHole;
+                let endHole;
+                
+                switch (roundType) {
+                  case 'front9':
+                    startHole = 0;
+                    endHole = 8;
+                    holesToDisplay = Array.from({ length: 9 }, (_, i) => i);
+                    break;
+                  case 'back9':
+                    startHole = 9;
+                    endHole = 17;
+                    holesToDisplay = Array.from({ length: 9 }, (_, i) => i + 9);
+                    break;
+                  case 'full':
+                  default:
+                    startHole = 0;
+                    endHole = 17;
+                    holesToDisplay = Array.from({ length: 18 }, (_, i) => i);
+                    break;
+                }
+                
+                return (
               <table className="leaderboard-table leaderboard-table-tournament">
                 <thead>
                   <tr className="leaderboard-header-row" style={{ borderBottom: 'none', borderBottomWidth: 0, fontSize: '12px', height: '24px' }}>
                     {/* Removed position column */}
                     <th className="leaderboard-th leaderboard-th-name leaderboard-th-tournament-name" style={{paddingLeft: '18px'}}>Hole</th>
-                    {scorecardData[0].scores && scorecardData[0].scores.map((_, idx) => (
-                      <React.Fragment key={idx}>
-                        <th className="leaderboard-th leaderboard-th-tournament-round">{idx + 1}</th>
-                        {idx === 8 && (
+                    {holesToDisplay.map((holeIndex, displayIdx) => (
+                      <React.Fragment key={holeIndex}>
+                        <th className="leaderboard-th leaderboard-th-tournament-round">{holeIndex + 1}</th>
+                        {roundType === 'full' && holeIndex === 8 && (
                           <th className="leaderboard-th leaderboard-th-tournament-total" style={{ borderRadius: 0 }}>Out</th>
                         )}
-                        {idx === 17 && (
+                        {roundType === 'full' && holeIndex === 17 && (
                           <th className="leaderboard-th leaderboard-th-tournament-total" style={{ borderRadius: 0 }}>In</th>
                         )}
                       </React.Fragment>
@@ -350,65 +419,63 @@ const Scorecard = () => {
                   </tr>
                   <tr className="leaderboard-header-row" style={{ borderTop: 'none', fontSize: '12px', height: '24px' }}>
                     <th className="leaderboard-th leaderboard-th-name leaderboard-th-tournament-name" style={{paddingLeft: '18px'}}>Par</th>
-                    {scorecardData[0].scores && scorecardData[0].scores.map((_, idx) => {
-                      const par = getHolePar(selectedCourseData, idx);
-                      const frontTotal = scorecardData[0].scores
-                        ? scorecardData[0].scores
+                    {holesToDisplay.map((holeIndex, displayIdx) => {
+                      const par = getHolePar(selectedCourseData, holeIndex);
+                      const frontTotal = roundType === 'full'
+                        ? holesToDisplay
                           .slice(0, 9)
-                          .reduce((sum, __, i) => sum + (getHolePar(selectedCourseData, i) || 0), 0)
-                        : '';
-                      const backTotal = scorecardData[0].scores
-                        ? scorecardData[0].scores
+                          .reduce((sum, i) => sum + (getHolePar(selectedCourseData, i) || 0), 0)
+                        : null;
+                      const backTotal = roundType === 'full'
+                        ? holesToDisplay
                           .slice(9, 18)
-                          .reduce((sum, __, i) => sum + (getHolePar(selectedCourseData, i + 9) || 0), 0)
-                        : '';
-                      const totalPar = scorecardData[0].scores
-                        ? scorecardData[0].scores
-                          .slice(0, 18)
-                          .reduce((sum, __, i) => sum + (getHolePar(selectedCourseData, i) || 0), 0)
-                        : '';
+                          .reduce((sum, i) => sum + (getHolePar(selectedCourseData, i) || 0), 0)
+                        : null;
 
                       return (
-                        <React.Fragment key={idx}>
+                        <React.Fragment key={holeIndex}>
                           <th className="leaderboard-th leaderboard-th-tournament-round">{par ?? ''}</th>
-                          {idx === 8 && (
+                          {roundType === 'full' && holeIndex === 8 && (
                             <th className="leaderboard-th leaderboard-th-tournament-total" style={{ borderRadius: 0 }}>{frontTotal}</th>
                           )}
-                          {idx === 17 && (
+                          {roundType === 'full' && holeIndex === 17 && (
                             <th className="leaderboard-th leaderboard-th-tournament-total" style={{ borderRadius: 0 }}>{backTotal}</th>
                           )}
                         </React.Fragment>
                       );
                     })}
                     <th className="leaderboard-th leaderboard-th-tournament-total" style={{ borderRadius: 0 }}>{
-                      scorecardData[0].scores
-                        ? scorecardData[0].scores
-                          .slice(0, 18)
-                          .reduce((sum, __, i) => sum + (getHolePar(selectedCourseData, i) || 0), 0)
-                        : ''
+                      holesToDisplay.reduce((sum, i) => sum + (getHolePar(selectedCourseData, i) || 0), 0)
                     }</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {scorecardData.map((round, idx) => (
+                  {scorecardData.map((round, idx) => {
+                    // Calculate totals based on displayed holes
+                    const outTotal = roundType === 'full' && Array.isArray(round.scores)
+                      ? round.scores.slice(0, 9).reduce((a, b) => a + b, 0)
+                      : null;
+                    const inTotal = roundType === 'full' && Array.isArray(round.scores)
+                      ? round.scores.slice(9, 18).reduce((a, b) => a + b, 0)
+                      : null;
+                    const displayTotal = Array.isArray(round.scores)
+                      ? holesToDisplay.reduce((sum, i) => sum + (round.scores[i] || 0), 0)
+                      : '';
+                    
+                    return (
                     <tr key={idx} className={idx % 2 === 0 ? 'leaderboard-row-even' : 'leaderboard-row-odd'}>
                       {/* Removed position cell */}
                       <td className="leaderboard-td leaderboard-td-name leaderboard-td-tournament-name" style={{paddingLeft: '18px'}}>{round.playerName || round.playerId}</td>
-                      {round.scores && round.scores.map((score, i) => {
-                        const par = getHolePar(selectedCourseData, i);
+                      {holesToDisplay.map((holeIndex, displayIdx) => {
+                        const score = round.scores?.[holeIndex] || 0;
+                        const par = getHolePar(selectedCourseData, holeIndex);
                         const iconType = getIconType(score, par);
                         const iconLabel = getIconLabel(iconType);
                         const solid = isSolidIcon(iconType);
                         const iconStyle = getIconStyle(iconType);
-                        const outTotal = Array.isArray(round.scores)
-                          ? round.scores.slice(0, 9).reduce((a, b) => a + b, 0)
-                          : '';
-                        const inTotal = Array.isArray(round.scores)
-                          ? round.scores.slice(9, 18).reduce((a, b) => a + b, 0)
-                          : '';
 
                         return (
-                          <React.Fragment key={i}>
+                          <React.Fragment key={holeIndex}>
                             <td className="leaderboard-td leaderboard-td-tournament-round">
                               {score === 0 ? '' : (
                                 <span
@@ -433,20 +500,22 @@ const Scorecard = () => {
                                 </span>
                               )}
                             </td>
-                            {i === 8 && (
+                            {roundType === 'full' && holeIndex === 8 && (
                               <td className="leaderboard-td leaderboard-td-tournament-total">{outTotal}</td>
                             )}
-                            {i === 17 && (
+                            {roundType === 'full' && holeIndex === 17 && (
                               <td className="leaderboard-td leaderboard-td-tournament-total">{inTotal}</td>
                             )}
                           </React.Fragment>
                         );
                       })}
-                      <td className="leaderboard-td leaderboard-td-tournament-total">{Array.isArray(round.scores) ? round.scores.reduce((a, b) => a + b, 0) : ''}</td>
+                      <td className="leaderboard-td leaderboard-td-tournament-total">{displayTotal}</td>
                     </tr>
-                  ))}
+                  )})}
                 </tbody>
               </table>
+                );
+              })()}
             </div>
           </div>
         ) : (

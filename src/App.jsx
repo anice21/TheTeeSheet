@@ -8,10 +8,14 @@ import RoundStart from './components/roundStart'
 import Leaderboard from './components/Leaderboard.jsx';
 import Scorecard from './components/Scorecard.jsx';
 import Hole from './components/Hole'; // Import the Hole component
+import TripScreen from './components/TripScreen';
+import TripList from './components/TripList';
+import AddCourse from './components/AddCourse';
 
 
 function App() {
-  const [view, setView] = useState('round'); // 'round' | 'leaderboard'
+  const [view, setView] = useState('round'); // 'round' | 'leaderboard' | 'trip' | 'tripList' | 'addCourse'
+  const [dropdownOpen, setDropdownOpen] = useState(false);
   const [currentHole, setCurrentHole] = useState(0);
   const [selectedCourse, setSelectedCourse] = useState(null); // stores selected round index (0-based)
   const [roundStarted, setRoundStarted] = useState(false);
@@ -20,6 +24,7 @@ function App() {
   const [user, setUser] = useState(null);
   const [resumeDirectToHole, setResumeDirectToHole] = useState(false);
   const [checkingRound, setCheckingRound] = useState(true);
+  const [selectedTrip, setSelectedTrip] = useState(null);
 
   // On mount, listen for auth state changes
   useEffect(() => {
@@ -121,6 +126,59 @@ function App() {
     }
   }, [user]);
 
+  // Fetch most recent trip for user after round check
+  useEffect(() => {
+    async function fetchMostRecentTrip(userId) {
+      try {
+        // Get all active trips
+        const tripsQuery = query(
+          collection(db, 'trips'),
+          where('isActive', '==', true)
+        );
+        const tripsSnapshot = await getDocs(tripsQuery);
+        
+        const userTrips = [];
+        
+        // For each trip, check if the user is in the players subcollection
+        for (const tripDoc of tripsSnapshot.docs) {
+          const playersSnapshot = await getDocs(
+            collection(db, 'trips', tripDoc.id, 'players')
+          );
+          
+          const isUserInTrip = playersSnapshot.docs.some(
+            playerDoc => playerDoc.data().playerId === userId
+          );
+          
+          if (isUserInTrip) {
+            userTrips.push({
+              id: tripDoc.id,
+              ...tripDoc.data()
+            });
+          }
+        }
+        
+        // Sort trips by start date (most recent first)
+        userTrips.sort((a, b) => {
+          const dateA = a.startDate?.toDate() || new Date(0);
+          const dateB = b.startDate?.toDate() || new Date(0);
+          return dateB - dateA;
+        });
+        
+        // Set the most recent trip and switch to leaderboard view
+        if (userTrips.length > 0 && !resumeDirectToHole) {
+          setSelectedTrip(userTrips[0]);
+          setView('leaderboard');
+        }
+      } catch (error) {
+        console.error('Error fetching most recent trip:', error);
+      }
+    }
+
+    if (user && !checkingRound) {
+      fetchMostRecentTrip(user.uid);
+    }
+  }, [user, checkingRound, resumeDirectToHole]);
+
   if (!user) {
     return <AuthForm onAuth={setUser} />;
   }
@@ -134,6 +192,50 @@ function App() {
   return (
     <div className="app-container">
       <header className="header-bar">
+        <div className="header-top">
+          <h2 className="header-title">ScoreCaddy</h2>
+          <div className="header-dropdown">
+            <button 
+              className="dropdown-toggle"
+              onClick={() => setDropdownOpen(!dropdownOpen)}
+            >
+              ⋮
+            </button>
+            {dropdownOpen && (
+              <div className="dropdown-menu">
+                {user?.uid === '0BhToYrQ8ubS910OTUrkAYTXN873' && (
+                  <button 
+                    className="dropdown-item"
+                    onClick={() => {
+                      setView('addCourse');
+                      setDropdownOpen(false);
+                    }}
+                  >
+                    Add Course
+                  </button>
+                )}
+                <button 
+                  className="dropdown-item"
+                  onClick={() => {
+                    setView('trip');
+                    setDropdownOpen(false);
+                  }}
+                >
+                  Create Trip
+                </button>
+                <button 
+                  className="dropdown-item"
+                  onClick={() => {
+                    setView('tripList');
+                    setDropdownOpen(false);
+                  }}
+                >
+                  Select Trip
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
         <nav className="nav-bar">
           <button
             className={`nav-btn${view === 'leaderboard' ? ' active' : ''}`}
@@ -189,6 +291,7 @@ function App() {
             isRoundFinished={isRoundFinished}
             setIsRoundFinished={setIsRoundFinished}
             setView={setView}
+            selectedTrip={selectedTrip}
             onSubmitRound={() => {
               setCurrentHole(0);
               setSelectedCourse(null); // Don't clear selectedCourse so it can be passed to Leaderboard
@@ -199,9 +302,15 @@ function App() {
             }}
           />
         ) : view === 'scorecard' ? (
-          <Scorecard />
+          <Scorecard selectedTrip={selectedTrip} />
+        ) : view === 'trip' ? (
+          <TripScreen currentUser={user} setView={setView} />
+        ) : view === 'tripList' ? (
+          <TripList currentUser={user} setView={setView} setSelectedTrip={setSelectedTrip} />
+        ) : view === 'addCourse' ? (
+          <AddCourse onBack={() => setView('round')} />
         ) : (
-          <Leaderboard currentUser={user} />
+          <Leaderboard currentUser={user} selectedTrip={selectedTrip} />
         )}
       </main>
     </div>

@@ -3,9 +3,10 @@ import { db } from '../firebase';
 import { collection, query, where, getDocs, deleteDoc, updateDoc } from 'firebase/firestore';
 
 // Make getPlayerTotalScore async and query Firestore for the player's round
-async function getPlayerTotalScore(player, course) {
+async function getPlayerTotalScore(player, course, selectedTrip, roundType = 'full') {
+    if (!selectedTrip?.id) return 0;
     const q = query(
-        collection(db, 'rounds'),
+        collection(db, 'trips', selectedTrip.id, 'scores'),
         where('courseId', '==', String(course.courseId)),
         where('playerId', '==', String(player.playerId)),
         where('isActive', '==', true)
@@ -15,34 +16,68 @@ async function getPlayerTotalScore(player, course) {
     // Assume only one active round per player per course
     const roundDoc = querySnapshot.docs[0];
     const roundData = roundDoc.data();
-    return Array.isArray(roundData.scores)
-        ? roundData.scores.reduce((sum, val) => sum + (typeof val === 'number' ? val : 0), 0)
-        : 0;
+    
+    if (!Array.isArray(roundData.scores)) return 0;
+    
+    // Calculate total based on roundType
+    let scoresToSum;
+    switch (roundType) {
+        case 'front9':
+            scoresToSum = roundData.scores.slice(0, 9); // Holes 1-9
+            break;
+        case 'back9':
+            scoresToSum = roundData.scores.slice(9, 18); // Holes 10-18
+            break;
+        case 'full':
+        default:
+            scoresToSum = roundData.scores;
+            break;
+    }
+    
+    return scoresToSum.reduce((sum, val) => sum + (typeof val === 'number' ? val : 0), 0);
 }
 
-function RoundSummary({ players, course, onEditRound, onSubmitRound }) {
+function RoundSummary({ players, course, onEditRound, onSubmitRound, selectedTrip, roundType = 'full' }) {
     const [deleting, setDeleting] = useState(false);
     const [totalScores, setTotalScores] = useState({});
-    const parTotal = Array.isArray(course?.pars)
-        ? course.pars.reduce((sum, val) => sum + (typeof val === 'number' ? val : 0), 0)
-        : 0;
+    
+    // Calculate par total based on roundType
+    const parTotal = React.useMemo(() => {
+        if (!Array.isArray(course?.pars)) return 0;
+        
+        let parsToSum;
+        switch (roundType) {
+            case 'front9':
+                parsToSum = course.pars.slice(0, 9); // Holes 1-9
+                break;
+            case 'back9':
+                parsToSum = course.pars.slice(9, 18); // Holes 10-18
+                break;
+            case 'full':
+            default:
+                parsToSum = course.pars;
+                break;
+        }
+        
+        return parsToSum.reduce((sum, val) => sum + (typeof val === 'number' ? val : 0), 0);
+    }, [course?.pars, roundType]);
 
     useEffect(() => {
         const fetchScores = async () => {
             const scores = {};
             for (const player of players) {
-                scores[player.playerId] = await getPlayerTotalScore(player, course);
+                scores[player.playerId] = await getPlayerTotalScore(player, course, selectedTrip, roundType);
             }
             setTotalScores(scores);
         };
 
-        if (players.length > 0 && course) {
+        if (players.length > 0 && course && selectedTrip) {
             fetchScores();
         }
-    }, [players, course]);
+    }, [players, course, selectedTrip, roundType]);
 
     const handleSubmit = async () => {
-        if (!course || !players || players.length === 0) {
+        if (!course || !players || players.length === 0 || !selectedTrip?.id) {
             if (onSubmitRound) onSubmitRound();
             return;
         }
@@ -50,7 +85,7 @@ function RoundSummary({ players, course, onEditRound, onSubmitRound }) {
             // For each player, update isRoundFinished to true for their active round for this course
             await Promise.all(players.map(async (p) => {
                 const q = query(
-                    collection(db, 'rounds'),
+                    collection(db, 'trips', selectedTrip.id, 'scores'),
                     where('courseId', '==', String(course.courseId)),
                     where('playerId', '==', String(p.playerId)),
                     where('isActive', '==', true)
@@ -65,13 +100,13 @@ function RoundSummary({ players, course, onEditRound, onSubmitRound }) {
     };
 
     const handleDiscard = async () => {
-        if (!course || !players || players.length === 0) return;
+        if (!course || !players || players.length === 0 || !selectedTrip?.id) return;
         setDeleting(true);
         try {
             // For each player, delete their round document for this course
             await Promise.all(players.map(async (p) => {
                 const q = query(
-                    collection(db, 'rounds'),
+                    collection(db, 'trips', selectedTrip.id, 'scores'),
                     where('courseId', '==', String(course.courseId)),
                     where('playerId', '==', String(p.playerId))
                 );

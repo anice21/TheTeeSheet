@@ -5,9 +5,24 @@ import RoundSummary from "./RoundSummary.jsx";
 
 
 
-function Hole({ course, players, currentHole: propCurrentHole, setCurrentHole: propSetCurrentHole, isRoundFinished, setIsRoundFinished, onSubmitRound }) {
+function Hole({ course, players, currentHole: propCurrentHole, setCurrentHole: propSetCurrentHole, isRoundFinished, setIsRoundFinished, onSubmitRound, selectedTrip, roundType = 'full' }) {
+    // Calculate start and end holes based on round type
+    const getHoleRange = () => {
+        switch (roundType) {
+            case 'front9':
+                return { startHole: 0, endHole: 8 }; // Holes 1-9
+            case 'back9':
+                return { startHole: 9, endHole: 17 }; // Holes 10-18
+            case 'full':
+            default:
+                return { startHole: 0, endHole: 17 }; // Holes 1-18
+        }
+    };
+    
+    const { startHole, endHole } = getHoleRange();
+    
     // support controlled `currentHole` passed from parent (App) or fall back to local state
-    const [localCurrentHole, setLocalCurrentHole] = useState(0);
+    const [localCurrentHole, setLocalCurrentHole] = useState(startHole);
     const currentHole = typeof propCurrentHole === 'number' ? propCurrentHole : localCurrentHole;
     const setCurrentHole = typeof propSetCurrentHole === 'function' ? propSetCurrentHole : setLocalCurrentHole;
 
@@ -18,6 +33,11 @@ function Hole({ course, players, currentHole: propCurrentHole, setCurrentHole: p
             return Array.from({ length: 18 }, (_, h) => getPlayerDefaultScore(p, h));
         })
     );
+
+    // Initialize currentHole to startHole when component mounts
+    useEffect(() => {
+        setCurrentHole(startHole);
+    }, [startHole, setCurrentHole]);
 
     // If players change (shouldn't mid-round), reset allScores and hydrate from Firestore
     useEffect(() => {
@@ -36,8 +56,11 @@ function Hole({ course, players, currentHole: propCurrentHole, setCurrentHole: p
             try {
                 const fetchedScores = await Promise.all(
                     players.map(async (p) => {
+                        if (!selectedTrip?.id) {
+                            return Array.from({ length: 18 }, (_, h) => getPlayerDefaultScore(p, h));
+                        }
                         const q = query(
-                            collection(db, "rounds"),
+                            collection(db, "trips", selectedTrip.id, "scores"),
                             where("courseId", "==", String(course.courseId)),
                             where("playerId", "==", String(p.playerId))
                         );
@@ -86,11 +109,11 @@ function Hole({ course, players, currentHole: propCurrentHole, setCurrentHole: p
     }
 
     async function saveHoleScore(player, holeIndex, val) {
-        if (!player?.playerId || !course?.courseId) return;
+        if (!player?.playerId || !course?.courseId || !selectedTrip?.id) return;
         const par = course?.pars?.[holeIndex] ?? 0;
         try {
             const q = query(
-                collection(db, "rounds"),
+                collection(db, "trips", selectedTrip.id, "scores"),
                 where("courseId", "==", String(course.courseId)),
                 where("playerId", "==", String(player.playerId))
             );
@@ -114,9 +137,10 @@ function Hole({ course, players, currentHole: propCurrentHole, setCurrentHole: p
             await Promise.all(players.map(async (p, i) => {
                 const val = allScores[i][currentHole];
                 const par = course?.pars?.[currentHole] ?? 0;
+                if (!selectedTrip?.id) return;
                 try {
                     const q = query(
-                        collection(db, "rounds"),
+                        collection(db, "trips", selectedTrip.id, "scores"),
                         where("courseId", "==", String(course.courseId)),
                         where("playerId", "==", String(p.playerId))
                     );
@@ -137,7 +161,7 @@ function Hole({ course, players, currentHole: propCurrentHole, setCurrentHole: p
             }));
         }
         // Advance to next hole
-        if (currentHole < (course?.pars?.length ?? 18) - 1) {
+        if (currentHole < endHole) {
             setCurrentHole(currentHole + 1);
         } else {
             setIsRoundFinished(true);
@@ -145,7 +169,7 @@ function Hole({ course, players, currentHole: propCurrentHole, setCurrentHole: p
     }
 
     function prevHole() {
-        if (currentHole > 0) {
+        if (currentHole > startHole) {
             setCurrentHole(currentHole - 1);
         }
     }
@@ -159,9 +183,11 @@ function Hole({ course, players, currentHole: propCurrentHole, setCurrentHole: p
                 course={course}
                 onEditRound={() => {
                     setIsRoundFinished(false);
-                    setCurrentHole(0);
+                    setCurrentHole(startHole);
                 }}
                 onSubmitRound={onSubmitRound}
+                selectedTrip={selectedTrip}
+                roundType={roundType}
             />
         );
     }
@@ -203,9 +229,9 @@ function Hole({ course, players, currentHole: propCurrentHole, setCurrentHole: p
                 )}
             </div>
             <div className="nav-buttons">
-                <button onClick={prevHole} disabled={currentHole === 0}> Previous Hole </button>
+                <button onClick={prevHole} disabled={currentHole === startHole}> Previous Hole </button>
                 <button onClick={nextHole}>
-                    {currentHole === course.pars.length - 1 ? "Finish Round" : "Next Hole"}
+                    {currentHole === endHole ? "Finish Round" : "Next Hole"}
                 </button>
             </div>
         </div>

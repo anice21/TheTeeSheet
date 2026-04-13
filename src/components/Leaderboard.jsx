@@ -6,7 +6,7 @@ import { db } from '../firebase';
 import { collection, getDocs, query, where } from 'firebase/firestore';
 
 
-function Leaderboard({ currentUser }) {
+function Leaderboard({ currentUser, selectedTrip }) {
   const [courses, setCourses] = useState([]);
   const [selectedCourse, setSelectedCourse] = useState(null);
   const [rounds, setRounds] = useState([]);
@@ -21,27 +21,43 @@ function Leaderboard({ currentUser }) {
 
   useEffect(() => {
     const fetchCourses = async () => {
-      const querySnapshot = await getDocs(collection(db, 'courses'));
-      const coursesData = querySnapshot.docs
-        .map(doc => ({ ...doc.data(), courseId: doc.id }))
-        .filter(course => course.isActive === true);
-      setCourses(coursesData);
+      if (!selectedTrip) {
+        setCourses([]);
+        return;
+      }
+      
+      // Get all rounds for this trip
+      const tripRoundsSnapshot = await getDocs(collection(db, 'trips', selectedTrip.id, 'rounds'));
+      const tripRounds = tripRoundsSnapshot.docs.map(doc => ({ 
+        ...doc.data(), 
+        id: doc.id,
+        name: doc.data().courseName // Use courseName as name for consistency
+      }));
+      
+      setCourses(tripRounds);
     };
     fetchCourses();
     // Fetch all rounds for tournament leaderboard
     const fetchAllRounds = async () => {
-      const querySnapshot = await getDocs(collection(db, 'rounds'));
+      if (!selectedTrip) {
+        setAllRounds([]);
+        return;
+      }
+      const querySnapshot = await getDocs(collection(db, 'trips', selectedTrip.id, 'scores'));
       const roundsData = querySnapshot.docs
         .map(doc => ({ ...doc.data(), id: doc.id }))
         .filter(round => round.isActive === true);
       setAllRounds(roundsData);
     };
     fetchAllRounds();
-  }, []);
+  }, [selectedTrip]);
 
   const fetchRoundsForCourse = async (courseObj) => {
-    if (courseObj) {
-      const q = query(collection(db, 'rounds'), where('courseId', '==', courseObj.courseId));
+    if (courseObj && selectedTrip) {
+      const q = query(
+        collection(db, 'trips', selectedTrip.id, 'scores'),
+        where('tripRoundID', '==', courseObj.tripRoundID)
+      );
       const querySnapshot = await getDocs(q);
       const roundsData = querySnapshot.docs
         .map(doc => ({ ...doc.data(), id: doc.id }))
@@ -53,23 +69,21 @@ function Leaderboard({ currentUser }) {
   };
 
   const handleSelectedCourse = async (e) => {
-    const courseId = e.target.value;
-    const courseObj = courses.find(c => String(c.courseId) === String(courseId));
+    const roundId = e.target.value;
+    const courseObj = courses.find(c => c.id === roundId);
     setSelectedCourse(courseObj || null);
     await fetchRoundsForCourse(courseObj || null);
   };
 
   useEffect(() => {
     const defaultLeaderboardView = async () => {
-      if (!currentUser || courses.length === 0) {
-        if (!currentUser) {
-          setIsDefaultingView(false);
-        }
+      if (!currentUser || courses.length === 0 || !selectedTrip) {
+        setIsDefaultingView(false);
         return;
       }
 
       setIsDefaultingView(true);
-      const roundsRef = collection(db, 'rounds');
+      const roundsRef = collection(db, 'trips', selectedTrip.id, 'scores');
       const primaryQuery = query(
         roundsRef,
         where('playerID', '==', currentUser.uid),
@@ -96,7 +110,7 @@ function Leaderboard({ currentUser }) {
         .map(doc => ({ ...doc.data(), id: doc.id }))
         .find(round => round.isActive === true) || querySnapshot.docs[0].data();
 
-      const courseObj = courses.find(c => String(c.courseId) === String(inProgressRound.courseId));
+      const courseObj = courses.find(c => c.tripRoundID === inProgressRound.tripRoundID);
       setMode('live');
       setSelectedCourse(courseObj || null);
       await fetchRoundsForCourse(courseObj || null);
@@ -104,7 +118,7 @@ function Leaderboard({ currentUser }) {
     };
 
     defaultLeaderboardView();
-  }, [currentUser, courses]);
+  }, [currentUser, courses, selectedTrip]);
 
   useEffect(() => {
     if (mode === 'tournament') {
@@ -153,13 +167,13 @@ function Leaderboard({ currentUser }) {
   // Tournament leaderboard sorting
   // Only show completed rounds (isRoundFinished === true)
   const completedRounds = allRounds.filter(r => r.isRoundFinished === true);
-  // Get unique completed courseIds in order of completion
-  const completedCourseIds = Array.from(
-    new Set(completedRounds.map(r => r.courseId))
+  // Get unique completed tripRoundIDs
+  const completedTripRoundIDs = Array.from(
+    new Set(completedRounds.map(r => r.tripRoundID))
   );
-  // Only show courses that have completed rounds, sorted by tripRoundID asc
+  // Only show rounds that have completed scores, sorted by tripRoundID asc
   const completedCourses = courses
-    .filter(c => completedCourseIds.includes(c.courseId))
+    .filter(c => completedTripRoundIDs.includes(c.tripRoundID))
     .sort((a, b) => {
       const aTrip = Number(a.tripRoundID);
       const bTrip = Number(b.tripRoundID);
@@ -178,12 +192,12 @@ function Leaderboard({ currentUser }) {
       if (!playerMap[key]) playerMap[key] = { playerName: r.playerName, playerId: r.playerId };
     });
     const players = Object.values(playerMap);
-    // Compute scores for each player per completed course and total
+    // Compute scores for each player per completed round and total
     const playerRows = players.map(player => {
       let totalScore = 0;
       const courseScores = completedCourses.map(course => {
-        // Only use finished rounds for this player and course
-        const round = completedRounds.find(r => (r.playerId === player.playerId || r.playerName === player.playerName) && r.courseId === course.courseId && r.isRoundFinished === true);
+        // Only use finished rounds for this player and tripRoundID
+        const round = completedRounds.find(r => (r.playerId === player.playerId || r.playerName === player.playerName) && r.tripRoundID === course.tripRoundID && r.isRoundFinished === true);
         let score = '-';
         if (round && Array.isArray(round.scores)) {
           if (scoreType === 'gross') {
@@ -216,8 +230,8 @@ function Leaderboard({ currentUser }) {
       } else if (sortConfig.key === 'total') {
         return sortConfig.direction === 'asc' ? a.totalScore - b.totalScore : b.totalScore - a.totalScore;
       } else {
-        // sortConfig.key is a courseId
-        const idx = completedCourses.findIndex(c => String(c.courseId) === String(sortConfig.key));
+        // sortConfig.key is a round id
+        const idx = completedCourses.findIndex(c => c.id === sortConfig.key);
         const aScore = a.courseScores[idx];
         const bScore = b.courseScores[idx];
         // Only sort numbers, keep '-' at the end
@@ -242,7 +256,7 @@ function Leaderboard({ currentUser }) {
   if (isDefaultingView) {
     return (
       <div className="leaderboard-container">
-        <h1>Mesquite 2026</h1>
+        <h1>{selectedTrip?.name || 'No Trip Selected'}</h1>
         <p className="leaderboard-empty-msg">Loading leaderboard...</p>
       </div>
     );
@@ -250,7 +264,7 @@ function Leaderboard({ currentUser }) {
 
   return (
     <div className="leaderboard-container">
-      <h1>Mesquite 2026</h1>
+      <h1>{selectedTrip?.name || 'No Trip Selected'}</h1>
       <div className="leaderboard-mode-bar">
         <button
           className={`leaderboard-mode-btn nav-btn${mode === 'live' ? ' active' : ''}`}
@@ -270,7 +284,7 @@ function Leaderboard({ currentUser }) {
       {mode === 'live' && (
         <label>
           Course:
-          <select className="select-dropdown" name="selectedCourse" value={selectedCourse ? selectedCourse.courseId : ''} onChange={handleSelectedCourse}>
+          <select className="select-dropdown" name="selectedCourse" value={selectedCourse ? selectedCourse.id : ''} onChange={handleSelectedCourse}>
             <option value="" disabled>Select a Course</option>
             {[...courses]
               .sort((a, b) => {
@@ -283,7 +297,7 @@ function Leaderboard({ currentUser }) {
                 return aTrip - bTrip;
               })
               .map((course) => (
-                <option key={String(course.courseId)} value={course.courseId}>
+                <option key={course.id} value={course.id}>
                   {course.tripRoundID ? `R${course.tripRoundID}: ` : ''}{course.name}
                 </option>
               ))}
@@ -415,9 +429,9 @@ function Leaderboard({ currentUser }) {
                     </th>
                     {completedCourses.map((course, idx) => (
                       <th
-                        key={course.courseId}
+                        key={course.id}
                         className="leaderboard-th leaderboard-th-tournament-round"
-                        onClick={() => handleTournamentSort(course.courseId)}
+                        onClick={() => handleTournamentSort(course.id)}
                       >
                         <span>{course.tripRoundID ? `R${course.tripRoundID}` : `R${idx + 1}`}</span>
                       </th>
