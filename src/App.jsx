@@ -11,10 +11,11 @@ import Hole from './components/Hole'; // Import the Hole component
 import TripScreen from './components/TripScreen';
 import TripList from './components/TripList';
 import AddCourse from './components/AddCourse';
+import EditPlayerHandicap from './components/EditPlayerHandicap';
 
 
 function App() {
-  const [view, setView] = useState('round'); // 'round' | 'leaderboard' | 'trip' | 'tripList' | 'addCourse'
+  const [view, setView] = useState('round'); // 'round' | 'leaderboard' | 'trip' | 'tripList' | 'addCourse' | 'editHandicaps'
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [currentHole, setCurrentHole] = useState(0);
   const [selectedCourse, setSelectedCourse] = useState(null); // stores selected round index (0-based)
@@ -25,6 +26,7 @@ function App() {
   const [resumeDirectToHole, setResumeDirectToHole] = useState(false);
   const [checkingRound, setCheckingRound] = useState(true);
   const [selectedTrip, setSelectedTrip] = useState(null);
+  const [roundType, setRoundType] = useState('full');
 
   // On mount, listen for auth state changes
   useEffect(() => {
@@ -39,86 +41,106 @@ function App() {
   useEffect(() => {
     async function checkInProgressRound(userId) {
       setCheckingRound(true);
-      // Step 1: Find the user's in-progress round where they are scoreKeeper
-
       console.log("Checking for in-progress rounds for user:", userId);
 
-      const q = query(
-        collection(db, 'rounds'),
-        where('scoreKeeper', '==', true),
-        where('playerId', '==', userId),
-        where('isRoundFinished', '==', false)
-      );
-
-      const querySnapshot = await getDocs(q);
-      if (querySnapshot.empty) {
-        setCheckingRound(false);
-        return;
-      }
-      // Get the groupId from the first matching round
-      const roundDoc = querySnapshot.docs[0];
-      const roundData = roundDoc.data();
-      const groupId = roundData.groupId;
-      if (!groupId) {
-        setCheckingRound(false);
-        return;
-      }
-
-
-      // Step 2: Get all rounds with this groupId
-      const groupQ = query(
-        collection(db, 'rounds'),
-        where('groupId', '==', groupId)
-      )
-
-      const groupSnapshot = await getDocs(groupQ);
-      const groupRounds = groupSnapshot.docs.map(doc => doc.data());
-
-      console.log("Found group rounds for groupId", groupId, ":", groupRounds);
-
-      // Step 3: Find the first hole index with a zero score in any round
-      let firstZeroIdx = null;
-      for (const r of groupRounds) {
-        if (Array.isArray(r.scores)) {
-          const idx = r.scores.findIndex(v => v === 0);
-          if (idx !== -1 && (firstZeroIdx === null || idx < firstZeroIdx)) {
-            firstZeroIdx = idx;
+      try {
+        // Get all active trips
+        const tripsQuery = query(
+          collection(db, 'trips'),
+          where('isActive', '==', true)
+        );
+        const tripsSnapshot = await getDocs(tripsQuery);
+        
+        // Check each trip for unfinished scores where user is scorekeeper
+        for (const tripDoc of tripsSnapshot.docs) {
+          const scoresQuery = query(
+            collection(db, 'trips', tripDoc.id, 'scores'),
+            where('scoreKeeper', '==', true),
+            where('playerId', '==', userId),
+            where('isRoundFinished', '==', false)
+          );
+          
+          const scoresSnapshot = await getDocs(scoresQuery);
+          if (scoresSnapshot.empty) continue;
+          
+          // Get the first unfinished score
+          const roundDoc = scoresSnapshot.docs[0];
+          const roundData = roundDoc.data();
+          const groupId = roundData.groupId;
+          
+          if (!groupId) continue;
+          
+          // Get all scores with this groupId
+          const groupQuery = query(
+            collection(db, 'trips', tripDoc.id, 'scores'),
+            where('groupId', '==', groupId)
+          );
+          
+          const groupSnapshot = await getDocs(groupQuery);
+          const groupRounds = groupSnapshot.docs.map(doc => doc.data());
+          
+          console.log("Found group rounds for groupId", groupId, ":", groupRounds);
+          
+          // Find the first hole index with a zero score in any round
+          let firstZeroIdx = null;
+          for (const r of groupRounds) {
+            if (Array.isArray(r.scores)) {
+              const idx = r.scores.findIndex(v => v === 0);
+              if (idx !== -1 && (firstZeroIdx === null || idx < firstZeroIdx)) {
+                firstZeroIdx = idx;
+              }
+            }
+          }
+          
+          console.log("First zero score index found at hole:", firstZeroIdx);
+          
+          if (firstZeroIdx !== null) {
+            setCurrentHole(firstZeroIdx);
+            setRoundStarted(true);
+            setSelectedPlayers(groupRounds.map(r => ({
+              ...r,
+              name: r.playerName || r.name || 'Unnamed Player',
+              playerId: r.playerId,
+              scores: r.scores
+            })));
+            
+            // Set the trip
+            setSelectedTrip({
+              id: tripDoc.id,
+              ...tripDoc.data()
+            });
+            
+            // Set the round type
+            setRoundType(roundData.roundType || 'full');
+            
+            // Query the course data from Firestore using courseId
+            try {
+              const courseDocSnap = await getDocs(query(collection(db, 'courses'), where('__name__', '==', roundData.courseId)));
+              let courseObj = null;
+              if (!courseDocSnap.empty) {
+                const doc = courseDocSnap.docs[0];
+                courseObj = { courseId: doc.id, ...doc.data() };
+              } else {
+                courseObj = { courseId: roundData.courseId, name: roundData.courseName || 'Unnamed Course' };
+              }
+              setSelectedCourse(courseObj);
+            } catch (err) {
+              setSelectedCourse({ courseId: roundData.courseId, name: roundData.courseName || 'Unnamed Course' });
+            }
+            
+            setIsRoundFinished(false);
+            setResumeDirectToHole(true);
+            console.log("Resuming round at hole", firstZeroIdx + 1, "with round type:", roundData.roundType || 'full');
+            break;
           }
         }
+      } catch (error) {
+        console.error("Error checking for in-progress rounds:", error);
       }
-
-      console.log("First zero score index found at hole:", firstZeroIdx);
-
-      if (firstZeroIdx !== null) {
-        setCurrentHole(firstZeroIdx); 
-        setRoundStarted(true);
-        setSelectedPlayers(groupRounds.map(r => ({
-          ...r,
-          name: r.playerName || r.name || 'Unnamed Player',
-          playerId: r.playerId
-        })));
-        // Query the course data from Firestore using courseId
-        try {
-          const courseDocSnap = await getDocs(query(collection(db, 'courses'), where('__name__', '==', roundData.courseId)));
-          let courseObj = null;
-          if (!courseDocSnap.empty) {
-            const doc = courseDocSnap.docs[0];
-            courseObj = { courseId: doc.id, ...doc.data() };
-          } else {
-            // fallback if not found
-            courseObj = { courseId: roundData.courseId, name: roundData.courseName || 'Unnamed Course' };
-          }
-          setSelectedCourse(courseObj);
-        } catch (err) {
-          setSelectedCourse({ courseId: roundData.courseId, name: roundData.courseName || 'Unnamed Course' });
-        }
-        setIsRoundFinished(false);
-        setResumeDirectToHole(true);
-        console.log("Resuming group round at hole", firstZeroIdx + 1);
-        console.log("Group round data:", groupRounds);
-      }
+      
       setCheckingRound(false);
     }
+    
     if (user) {
       checkInProgressRound(user.uid);
     } else {
@@ -232,6 +254,17 @@ function App() {
                 >
                   Select Trip
                 </button>
+                {selectedTrip && user?.uid === selectedTrip?.organizerId && (
+                  <button 
+                    className="dropdown-item"
+                    onClick={() => {
+                      setView('editHandicaps');
+                      setDropdownOpen(false);
+                    }}
+                  >
+                    Edit Handicaps
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -267,6 +300,8 @@ function App() {
             setCurrentHole={setCurrentHole}
             isRoundFinished={isRoundFinished}
             setIsRoundFinished={setIsRoundFinished}
+            selectedTrip={selectedTrip}
+            roundType={roundType}
             onSubmitRound={() => {
               setCurrentHole(0);
               setSelectedCourse(null);
@@ -274,6 +309,7 @@ function App() {
               setSelectedPlayers([]);
               setIsRoundFinished(false);
               setResumeDirectToHole(false);
+              setRoundType('full');
               setView('leaderboard');
             }}
           />
@@ -309,6 +345,12 @@ function App() {
           <TripList currentUser={user} setView={setView} setSelectedTrip={setSelectedTrip} />
         ) : view === 'addCourse' ? (
           <AddCourse onBack={() => setView('round')} />
+        ) : view === 'editHandicaps' ? (
+          <EditPlayerHandicap 
+            tripId={selectedTrip?.id} 
+            onBack={() => setView('leaderboard')}
+            onSave={() => setView('leaderboard')}
+          />
         ) : (
           <Leaderboard currentUser={user} selectedTrip={selectedTrip} />
         )}

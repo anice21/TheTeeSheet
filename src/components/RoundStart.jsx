@@ -42,11 +42,14 @@ function RoundStart({ currentUserID, currentHole, setCurrentHole, selectedCourse
                 return;
             }
             
-            // Get players who are part of this trip
+            // Get players who are part of this trip (includes trip-specific handicap)
             const tripPlayersSnapshot = await getDocs(collection(db, "trips", selectedTrip.id, "players"));
-            const tripPlayerIds = tripPlayersSnapshot.docs.map(doc => doc.data().playerId);
+            const tripPlayers = tripPlayersSnapshot.docs.map(doc => ({
+                ...doc.data(),
+                tripPlayerId: doc.id
+            }));
             
-            if (tripPlayerIds.length === 0) {
+            if (tripPlayers.length === 0) {
                 setPlayers([]);
                 return;
             }
@@ -55,7 +58,15 @@ function RoundStart({ currentUserID, currentHole, setCurrentHole, selectedCourse
             const playersSnapshot = await getDocs(collection(db, "players"));
             const allPlayers = playersSnapshot.docs
                 .map(doc => ({ ...doc.data(), playerId: doc.id }))
-                .filter(player => player.isActive === true && tripPlayerIds.includes(player.playerId));
+                .filter(player => player.isActive === true && tripPlayers.some(tp => tp.playerId === player.playerId))
+                .map(player => {
+                    // Merge with trip player data to get trip-specific handicap
+                    const tripPlayer = tripPlayers.find(tp => tp.playerId === player.playerId);
+                    return {
+                        ...player,
+                        handicap: tripPlayer?.handicap ?? player.handicap
+                    };
+                });
             
             // Get all rounds for this course and trip round
             const roundsSnapshot = await getDocs(collection(db, "trips", selectedTrip.id, "scores"));

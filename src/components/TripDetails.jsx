@@ -53,6 +53,7 @@ function TripDetails({ tripId, onBack, onGoToLeaderboard }) {
           playerId: player.playerId,
           name: player.name,
           email: player.email || '',
+          handicap: player.handicap || 0,
           invitationStatus: 'accepted', // Simple approach - auto-accepted
           invitedAt: Timestamp.now()
         });

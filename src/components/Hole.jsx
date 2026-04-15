@@ -34,10 +34,12 @@ function Hole({ course, players, currentHole: propCurrentHole, setCurrentHole: p
         })
     );
 
-    // Initialize currentHole to startHole when component mounts
+    // Initialize currentHole to startHole only if using local state and currentHole is outside the valid range
     useEffect(() => {
-        setCurrentHole(startHole);
-    }, [startHole, setCurrentHole]);
+        if (typeof propCurrentHole !== 'number' && (localCurrentHole < startHole || localCurrentHole > endHole)) {
+            setLocalCurrentHole(startHole);
+        }
+    }, [startHole, endHole, propCurrentHole, localCurrentHole]);
 
     // If players change (shouldn't mid-round), reset allScores and hydrate from Firestore
     useEffect(() => {
