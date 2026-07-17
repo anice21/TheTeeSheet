@@ -3,14 +3,21 @@ import { db } from '../firebase';
 import { collection, query, where, getDocs, deleteDoc, updateDoc } from 'firebase/firestore';
 
 // Make getPlayerTotalScore async and query Firestore for the player's round
-async function getPlayerTotalScore(player, course, selectedTrip, roundType = 'full') {
+async function getPlayerTotalScore(player, course, selectedTrip, tripRoundID) {
     if (!selectedTrip?.id) return 0;
-    const q = query(
-        collection(db, 'trips', selectedTrip.id, 'scores'),
+    
+    const constraints = [
         where('courseId', '==', String(course.courseId)),
         where('playerId', '==', String(player.playerId)),
+        where('isRoundFinished', '==', false),
         where('isActive', '==', true)
-    );
+    ];
+    
+    if (tripRoundID !== undefined && tripRoundID !== null) {
+        constraints.push(where('tripRoundID', '==', tripRoundID));
+    }
+    
+    const q = query(collection(db, 'trips', selectedTrip.id, 'scores'), ...constraints);
     const querySnapshot = await getDocs(q);
     if (querySnapshot.empty) return 0;
     // Assume only one active round per player per course
@@ -18,6 +25,9 @@ async function getPlayerTotalScore(player, course, selectedTrip, roundType = 'fu
     const roundData = roundDoc.data();
     
     if (!Array.isArray(roundData.scores)) return 0;
+    
+    // Use roundType from the stored document
+    const roundType = roundData.roundType || 'full';
     
     // Calculate total based on roundType
     let scoresToSum;
@@ -34,19 +44,47 @@ async function getPlayerTotalScore(player, course, selectedTrip, roundType = 'fu
             break;
     }
     
-    return scoresToSum.reduce((sum, val) => sum + (typeof val === 'number' ? val : 0), 0);
+    // Only sum scores greater than 0 (0 means hole not played)
+    return scoresToSum.reduce((sum, val) => sum + (typeof val === 'number' && val > 0 ? val : 0), 0);
 }
 
-function RoundSummary({ players, course, onEditRound, onSubmitRound, selectedTrip, roundType = 'full' }) {
+function RoundSummary({ players, course, onEditRound, onSubmitRound, selectedTrip, tripRoundID, roundType = 'full' }) {
     const [deleting, setDeleting] = useState(false);
     const [totalScores, setTotalScores] = useState({});
+    const [actualRoundType, setActualRoundType] = useState(roundType);
     
-    // Calculate par total based on roundType
+    // Fetch the actual round type from Firestore
+    useEffect(() => {
+        const fetchRoundType = async () => {
+            if (!selectedTrip?.id || !course?.courseId || players.length === 0) return;
+            
+            const constraints = [
+                where('courseId', '==', String(course.courseId)),
+                where('isRoundFinished', '==', false),
+                where('isActive', '==', true)
+            ];
+            
+            if (tripRoundID !== undefined && tripRoundID !== null) {
+                constraints.push(where('tripRoundID', '==', tripRoundID));
+            }
+            
+            const q = query(collection(db, 'trips', selectedTrip.id, 'scores'), ...constraints);
+            const querySnapshot = await getDocs(q);
+            if (!querySnapshot.empty) {
+                const roundData = querySnapshot.docs[0].data();
+                setActualRoundType(roundData.roundType || 'full');
+            }
+        };
+        
+        fetchRoundType();
+    }, [selectedTrip, course, players, tripRoundID]);
+    
+    // Calculate par total based on actualRoundType
     const parTotal = React.useMemo(() => {
         if (!Array.isArray(course?.pars)) return 0;
         
         let parsToSum;
-        switch (roundType) {
+        switch (actualRoundType) {
             case 'front9':
                 parsToSum = course.pars.slice(0, 9); // Holes 1-9
                 break;
@@ -60,13 +98,13 @@ function RoundSummary({ players, course, onEditRound, onSubmitRound, selectedTri
         }
         
         return parsToSum.reduce((sum, val) => sum + (typeof val === 'number' ? val : 0), 0);
-    }, [course?.pars, roundType]);
+    }, [course?.pars, actualRoundType]);
 
     useEffect(() => {
         const fetchScores = async () => {
             const scores = {};
             for (const player of players) {
-                scores[player.playerId] = await getPlayerTotalScore(player, course, selectedTrip, roundType);
+                scores[player.playerId] = await getPlayerTotalScore(player, course, selectedTrip, tripRoundID);
             }
             setTotalScores(scores);
         };
@@ -74,7 +112,7 @@ function RoundSummary({ players, course, onEditRound, onSubmitRound, selectedTri
         if (players.length > 0 && course && selectedTrip) {
             fetchScores();
         }
-    }, [players, course, selectedTrip, roundType]);
+    }, [players, course, selectedTrip, tripRoundID]);
 
     const handleSubmit = async () => {
         if (!course || !players || players.length === 0 || !selectedTrip?.id) {
@@ -84,12 +122,17 @@ function RoundSummary({ players, course, onEditRound, onSubmitRound, selectedTri
         try {
             // For each player, update isRoundFinished to true for their active round for this course
             await Promise.all(players.map(async (p) => {
-                const q = query(
-                    collection(db, 'trips', selectedTrip.id, 'scores'),
+                const constraints = [
                     where('courseId', '==', String(course.courseId)),
                     where('playerId', '==', String(p.playerId)),
                     where('isActive', '==', true)
-                );
+                ];
+                
+                if (tripRoundID !== undefined && tripRoundID !== null) {
+                    constraints.push(where('tripRoundID', '==', tripRoundID));
+                }
+                
+                const q = query(collection(db, 'trips', selectedTrip.id, 'scores'), ...constraints);
                 const querySnapshot = await getDocs(q);
                 await Promise.all(querySnapshot.docs.map(docSnap => updateDoc(docSnap.ref, { isRoundFinished: true })));
             }));
@@ -105,11 +148,16 @@ function RoundSummary({ players, course, onEditRound, onSubmitRound, selectedTri
         try {
             // For each player, delete their round document for this course
             await Promise.all(players.map(async (p) => {
-                const q = query(
-                    collection(db, 'trips', selectedTrip.id, 'scores'),
+                const constraints = [
                     where('courseId', '==', String(course.courseId)),
                     where('playerId', '==', String(p.playerId))
-                );
+                ];
+                
+                if (tripRoundID !== undefined && tripRoundID !== null) {
+                    constraints.push(where('tripRoundID', '==', tripRoundID));
+                }
+                
+                const q = query(collection(db, 'trips', selectedTrip.id, 'scores'), ...constraints);
                 const querySnapshot = await getDocs(q);
                 await Promise.all(querySnapshot.docs.map(docSnap => deleteDoc(docSnap.ref)));
             }));

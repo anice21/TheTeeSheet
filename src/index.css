@@ -1259,6 +1259,36 @@ h1, h2 {
   background: #c82333;
 }
 
+.btn-edit {
+  background: #9ca3af;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.btn-edit:hover {
+  background: #6b7280;
+}
+
+.btn-save {
+  background: #22c55e;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.btn-save:hover {
+  background: #16a34a;
+}
+
 .round-item .form-group {
   margin-bottom: 12px;
 }
@@ -1280,6 +1310,7 @@ h1, h2 {
   font-size: 14px;
   outline: none;
   transition: border-color 0.2s;
+  box-sizing: border-box;
 }
 
 .round-item .form-group select:focus,

@@ -41,6 +41,17 @@ function Hole({ course, players, currentHole: propCurrentHole, setCurrentHole: p
         }
     }, [startHole, endHole, propCurrentHole, localCurrentHole]);
 
+    // Constrain currentHole to valid range when using controlled mode
+    useEffect(() => {
+        if (typeof propCurrentHole === 'number' && typeof propSetCurrentHole === 'function') {
+            if (propCurrentHole < startHole) {
+                propSetCurrentHole(startHole);
+            } else if (propCurrentHole > endHole) {
+                propSetCurrentHole(endHole);
+            }
+        }
+    }, [propCurrentHole, propSetCurrentHole, startHole, endHole]);
+
     // If players change (shouldn't mid-round), reset allScores and hydrate from Firestore
     useEffect(() => {
         let isMounted = true;
@@ -61,10 +72,19 @@ function Hole({ course, players, currentHole: propCurrentHole, setCurrentHole: p
                         if (!selectedTrip?.id) {
                             return Array.from({ length: 18 }, (_, h) => getPlayerDefaultScore(p, h));
                         }
-                        const q = query(
-                            collection(db, "trips", selectedTrip.id, "scores"),
+                        
+                        const constraints = [
                             where("courseId", "==", String(course.courseId)),
                             where("playerId", "==", String(p.playerId))
+                        ];
+                        
+                        if (course?.tripRoundID !== undefined && course?.tripRoundID !== null) {
+                            constraints.push(where("tripRoundID", "==", course.tripRoundID));
+                        }
+                        
+                        const q = query(
+                            collection(db, "trips", selectedTrip.id, "scores"),
+                            ...constraints
                         );
                         const querySnapshot = await getDocs(q);
                         if (querySnapshot.empty) {
@@ -114,10 +134,18 @@ function Hole({ course, players, currentHole: propCurrentHole, setCurrentHole: p
         if (!player?.playerId || !course?.courseId || !selectedTrip?.id) return;
         const par = course?.pars?.[holeIndex] ?? 0;
         try {
-            const q = query(
-                collection(db, "trips", selectedTrip.id, "scores"),
+            const constraints = [
                 where("courseId", "==", String(course.courseId)),
                 where("playerId", "==", String(player.playerId))
+            ];
+            
+            if (course?.tripRoundID !== undefined && course?.tripRoundID !== null) {
+                constraints.push(where("tripRoundID", "==", course.tripRoundID));
+            }
+            
+            const q = query(
+                collection(db, "trips", selectedTrip.id, "scores"),
+                ...constraints
             );
             const querySnapshot = await getDocs(q);
             await Promise.all(querySnapshot.docs.map(async (docSnap) => {
@@ -141,10 +169,18 @@ function Hole({ course, players, currentHole: propCurrentHole, setCurrentHole: p
                 const par = course?.pars?.[currentHole] ?? 0;
                 if (!selectedTrip?.id) return;
                 try {
-                    const q = query(
-                        collection(db, "trips", selectedTrip.id, "scores"),
+                    const constraints = [
                         where("courseId", "==", String(course.courseId)),
                         where("playerId", "==", String(p.playerId))
+                    ];
+                    
+                    if (course?.tripRoundID !== undefined && course?.tripRoundID !== null) {
+                        constraints.push(where("tripRoundID", "==", course.tripRoundID));
+                    }
+                    
+                    const q = query(
+                        collection(db, "trips", selectedTrip.id, "scores"),
+                        ...constraints
                     );
                     const querySnapshot = await getDocs(q);
                     querySnapshot.forEach(async (docSnap) => {
@@ -176,6 +212,53 @@ function Hole({ course, players, currentHole: propCurrentHole, setCurrentHole: p
         }
     }
 
+    async function handleEditRound() {
+        // Fetch the actual roundType from Firestore to determine correct starting hole
+        let correctStartHole = startHole;
+        
+        if (selectedTrip?.id && course?.courseId && players.length > 0) {
+            try {
+                const constraints = [
+                    where("courseId", "==", String(course.courseId)),
+                    where("isActive", "==", true)
+                ];
+                
+                if (course?.tripRoundID !== undefined && course?.tripRoundID !== null) {
+                    constraints.push(where("tripRoundID", "==", course.tripRoundID));
+                }
+                
+                const q = query(
+                    collection(db, "trips", selectedTrip.id, "scores"),
+                    ...constraints
+                );
+                const querySnapshot = await getDocs(q);
+                if (!querySnapshot.empty) {
+                    const roundData = querySnapshot.docs[0].data();
+                    const actualRoundType = roundData.roundType || 'full';
+                    
+                    // Calculate correct startHole based on actual roundType
+                    switch (actualRoundType) {
+                        case 'front9':
+                            correctStartHole = 0;
+                            break;
+                        case 'back9':
+                            correctStartHole = 9;
+                            break;
+                        case 'full':
+                        default:
+                            correctStartHole = 0;
+                            break;
+                    }
+                }
+            } catch (err) {
+                console.error("Error fetching roundType for edit:", err);
+            }
+        }
+        
+        setIsRoundFinished(false);
+        setCurrentHole(correctStartHole);
+    }
+
     if (isRoundFinished) {
         // Pass the scores to RoundSummary by cloning players and attaching scores
         const playersWithScores = players.map((p, i) => ({ ...p, scores: allScores[i] }));
@@ -183,12 +266,10 @@ function Hole({ course, players, currentHole: propCurrentHole, setCurrentHole: p
             <RoundSummary
                 players={playersWithScores}
                 course={course}
-                onEditRound={() => {
-                    setIsRoundFinished(false);
-                    setCurrentHole(startHole);
-                }}
+                onEditRound={handleEditRound}
                 onSubmitRound={onSubmitRound}
                 selectedTrip={selectedTrip}
+                tripRoundID={course?.tripRoundID}
                 roundType={roundType}
             />
         );

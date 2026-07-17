@@ -239,25 +239,24 @@ function RoundSelection({ tripId, tripData, onComplete, onBack }) {
               </select>
             </div>
 
-            <div className="form-row">
-              <div className="form-group">
-                <label>Date</label>
-                <input
-                  type="date"
-                  value={round.date}
-                  onChange={(e) => updateRoundDetail(index, 'date', e.target.value)}
-                  min={tripData?.startDate?.toDate().toISOString().split('T')[0]}
-                  max={tripData?.endDate?.toDate().toISOString().split('T')[0]}
-                />
-              </div>
-              <div className="form-group">
-                <label>Tee Time</label>
-                <input
-                  type="time"
-                  value={round.teeTime}
-                  onChange={(e) => updateRoundDetail(index, 'teeTime', e.target.value)}
-                />
-              </div>
+            <div className="form-group">
+              <label>Date</label>
+              <input
+                type="date"
+                value={round.date}
+                onChange={(e) => updateRoundDetail(index, 'date', e.target.value)}
+                min={tripData?.startDate?.toDate().toISOString().split('T')[0]}
+                max={tripData?.endDate?.toDate().toISOString().split('T')[0]}
+              />
+            </div>
+
+            <div className="form-group">
+              <label>Tee Time</label>
+              <input
+                type="time"
+                value={round.teeTime}
+                onChange={(e) => updateRoundDetail(index, 'teeTime', e.target.value)}
+              />
             </div>
 
             <div className="form-group">

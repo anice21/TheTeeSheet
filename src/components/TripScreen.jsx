@@ -3,8 +3,13 @@ import { db } from '../firebase';
 import { collection, addDoc, Timestamp, doc, getDoc } from 'firebase/firestore';
 import TripDetails from './TripDetails';
 import RoundSelection from './RoundSelection';
+import { useLogger, useLogLifecycle } from '../utils/logger/LoggerContext';
+import { LOG_CATEGORIES } from '../config/logging';
 
 function TripScreen({ currentUser, setView }) {
+  const logger = useLogger('TripScreen');
+  useLogLifecycle('TripScreen');
+  
   const [tripName, setTripName] = useState('');
   const [location, setLocation] = useState('');
   const [startDate, setStartDate] = useState('');
@@ -21,6 +26,12 @@ function TripScreen({ currentUser, setView }) {
     setSaving(true);
     setMessage('');
 
+    logger.info('Creating trip', {
+      tripName,
+      location,
+      category: LOG_CATEGORIES.TRIP,
+    });
+
     try {
       const tripData = {
         name: tripName,
@@ -35,7 +46,12 @@ function TripScreen({ currentUser, setView }) {
       };
 
       const docRef = await addDoc(collection(db, 'trips'), tripData);
-      console.log('Trip created with ID:', docRef.id);
+      
+      logger.info('Trip created successfully', {
+        tripId: docRef.id,
+        tripName,
+        category: LOG_CATEGORIES.TRIP,
+      });
       
       setMessage('Trip created successfully!');
       // Store trip data and navigate to round selection
@@ -49,7 +65,11 @@ function TripScreen({ currentUser, setView }) {
       setEndDate('');
       setDescription('');
     } catch (error) {
-      console.error('Error creating trip:', error);
+      logger.error('Error creating trip', {
+        error,
+        tripName,
+        category: LOG_CATEGORIES.TRIP,
+      });
       setMessage('Error creating trip. Please try again.');
     } finally {
       setSaving(false);

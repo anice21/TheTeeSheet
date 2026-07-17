@@ -44,6 +44,7 @@ function EditPlayerHandicap({ tripId, onBack, onSave }) {
     }
   }, [tripId]);
 
+  
   // Handle handicap change
   const handleHandicapChange = (playerId, value) => {
     const numValue = parseInt(value);

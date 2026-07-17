@@ -8,10 +8,6 @@ The TripScreen will allow users to create and manage golf trips, including sched
 ### 1. Trip Creation
 - **Trip Details**
   - Trip name/title
-  - Location/destination
-  - Start and end dates
-  - Description/notes
-  - Trip organizer/creator
 
 ### 2. Round Management
 - Add multiple rounds to the trip
@@ -19,8 +15,6 @@ The TripScreen will allow users to create and manage golf trips, including sched
   - Course name
   - Date and tee time
   - Number of holes (9/18)
-  - Game format (stroke play, match play, scramble, etc.)
-  - Notes/special rules
 
 ### 3. Player Management
 - Add players to the trip

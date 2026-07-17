@@ -12,10 +12,16 @@ import TripScreen from './components/TripScreen';
 import TripList from './components/TripList';
 import AddCourse from './components/AddCourse';
 import EditPlayerHandicap from './components/EditPlayerHandicap';
+import EditTrip from './components/EditTrip';
+import { useLogger, useLogLifecycle } from './utils/logger/LoggerContext';
+import { LOG_CATEGORIES } from './config/logging';
+import { ErrorBoundary } from './utils/errorBoundary';
 
 
 function App() {
-  const [view, setView] = useState('round'); // 'round' | 'leaderboard' | 'trip' | 'tripList' | 'addCourse' | 'editHandicaps'
+  const logger = useLogger('App');
+  useLogLifecycle('App');
+  const [view, setView] = useState('round'); // 'round' | 'leaderboard' | 'trip' | 'tripList' | 'addCourse' | 'editHandicaps' | 'editTrip'
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [currentHole, setCurrentHole] = useState(0);
   const [selectedCourse, setSelectedCourse] = useState(null); // stores selected round index (0-based)
@@ -32,16 +38,32 @@ function App() {
   useEffect(() => {
     const auth = getAuth();
     const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      if (firebaseUser) {
+        logger.info('User authenticated', {
+          userId: firebaseUser.uid,
+          email: firebaseUser.email,
+          category: LOG_CATEGORIES.AUTH,
+        });
+        logger.setContext({ userId: firebaseUser.uid });
+      } else {
+        logger.info('User logged out', {
+          category: LOG_CATEGORIES.AUTH,
+        });
+        logger.clearContext();
+      }
       setUser(firebaseUser);
     });
     return () => unsubscribe();
-  }, []);
+  }, [logger]);
 
   // On user load, check for unfinished round where user is scoreKeeper
   useEffect(() => {
     async function checkInProgressRound(userId) {
       setCheckingRound(true);
-      console.log("Checking for in-progress rounds for user:", userId);
+      logger.info('Checking for in-progress rounds', {
+        userId,
+        category: LOG_CATEGORIES.ROUND,
+      });
 
       try {
         // Get all active trips
@@ -79,7 +101,11 @@ function App() {
           const groupSnapshot = await getDocs(groupQuery);
           const groupRounds = groupSnapshot.docs.map(doc => doc.data());
           
-          console.log("Found group rounds for groupId", groupId, ":", groupRounds);
+          logger.debug('Found group rounds', {
+            groupId,
+            roundCount: groupRounds.length,
+            category: LOG_CATEGORIES.ROUND,
+          });
           
           // Find the first hole index with a zero score in any round
           let firstZeroIdx = null;
@@ -92,9 +118,20 @@ function App() {
             }
           }
           
-          console.log("First zero score index found at hole:", firstZeroIdx);
+          logger.debug('First incomplete hole found', {
+            holeIndex: firstZeroIdx,
+            category: LOG_CATEGORIES.ROUND,
+          });
           
           if (firstZeroIdx !== null) {
+            logger.info('Resuming in-progress round', {
+              tripId: tripDoc.id,
+              holeNumber: firstZeroIdx + 1,
+              playerCount: groupRounds.length,
+              roundType: roundData.roundType || 'full',
+              category: LOG_CATEGORIES.ROUND,
+            });
+            
             setCurrentHole(firstZeroIdx);
             setRoundStarted(true);
             setSelectedPlayers(groupRounds.map(r => ({
@@ -130,12 +167,15 @@ function App() {
             
             setIsRoundFinished(false);
             setResumeDirectToHole(true);
-            console.log("Resuming round at hole", firstZeroIdx + 1, "with round type:", roundData.roundType || 'full');
             break;
           }
         }
       } catch (error) {
-        console.error("Error checking for in-progress rounds:", error);
+        logger.error('Error checking for in-progress rounds', {
+          error,
+          userId,
+          category: LOG_CATEGORIES.ROUND,
+        });
       }
       
       setCheckingRound(false);
@@ -146,7 +186,7 @@ function App() {
     } else {
       setCheckingRound(false);
     }
-  }, [user]);
+  }, [user, logger]);
 
   // Fetch most recent trip for user after round check
   useEffect(() => {
@@ -179,27 +219,73 @@ function App() {
           }
         }
         
-        // Sort trips by start date (most recent first)
-        userTrips.sort((a, b) => {
-          const dateA = a.startDate?.toDate() || new Date(0);
-          const dateB = b.startDate?.toDate() || new Date(0);
-          return dateB - dateA;
+        // Check if current date falls within any trip's date range
+        const now = new Date();
+        now.setHours(0, 0, 0, 0); // Reset time to midnight for date-only comparison
+        
+        const currentTrips = userTrips.filter(trip => {
+          const startDate = trip.startDate?.toDate();
+          const endDate = trip.endDate?.toDate();
+          
+          if (startDate && endDate) {
+            startDate.setHours(0, 0, 0, 0);
+            endDate.setHours(23, 59, 59, 999);
+            return now >= startDate && now <= endDate;
+          }
+          return false;
         });
         
-        // Set the most recent trip and switch to leaderboard view
-        if (userTrips.length > 0 && !resumeDirectToHole) {
-          setSelectedTrip(userTrips[0]);
+        let selectedTrip;
+        
+        if (currentTrips.length > 0) {
+          // If there are trips where current date is in range, select the one with earliest start date
+          currentTrips.sort((a, b) => {
+            const dateA = a.startDate?.toDate() || new Date(0);
+            const dateB = b.startDate?.toDate() || new Date(0);
+            return dateA - dateB; // Ascending order (earliest first)
+          });
+          selectedTrip = currentTrips[0];
+        } else {
+          // If no current trips, sort by end date (most recent first)
+          userTrips.sort((a, b) => {
+            const dateA = a.endDate?.toDate() || new Date(0);
+            const dateB = b.endDate?.toDate() || new Date(0);
+            return dateB - dateA; // Descending order (most recent first)
+          });
+          selectedTrip = userTrips[0];
+        }
+        
+        // Set the selected trip and switch to leaderboard view
+        if (selectedTrip && !resumeDirectToHole) {
+          logger.info('Selected trip loaded', {
+            tripId: selectedTrip.id,
+            tripName: selectedTrip.name,
+            category: LOG_CATEGORIES.TRIP,
+          });
+          setSelectedTrip(selectedTrip);
           setView('leaderboard');
         }
       } catch (error) {
-        console.error('Error fetching most recent trip:', error);
+        logger.error('Error fetching most recent trip', {
+          error,
+          userId,
+          category: LOG_CATEGORIES.TRIP,
+        });
       }
     }
 
     if (user && !checkingRound) {
       fetchMostRecentTrip(user.uid);
     }
-  }, [user, checkingRound, resumeDirectToHole]);
+  }, [user, checkingRound, resumeDirectToHole, logger]);
+
+  // Log view changes
+  useEffect(() => {
+    logger.info('View changed', {
+      view,
+      category: LOG_CATEGORIES.NAVIGATION,
+    });
+  }, [view, logger]);
 
   if (!user) {
     return <AuthForm onAuth={setUser} />;
@@ -209,7 +295,13 @@ function App() {
     return <div style={{textAlign: 'center', marginTop: 40}}>Loading...</div>;
   }
 
-  console.log("Resume direct to hole:", resumeDirectToHole);
+  logger.debug('Render state', {
+    view,
+    roundStarted,
+    resumeDirectToHole,
+    hasCourse: !!selectedCourse,
+    hasTrip: !!selectedTrip,
+  });
 
   return (
     <div className="app-container">
@@ -255,15 +347,26 @@ function App() {
                   Select Trip
                 </button>
                 {selectedTrip && user?.uid === selectedTrip?.organizerId && (
-                  <button 
-                    className="dropdown-item"
-                    onClick={() => {
-                      setView('editHandicaps');
-                      setDropdownOpen(false);
-                    }}
-                  >
-                    Edit Handicaps
-                  </button>
+                  <>
+                    <button 
+                      className="dropdown-item"
+                      onClick={() => {
+                        setView('editHandicaps');
+                        setDropdownOpen(false);
+                      }}
+                    >
+                      Edit Handicaps
+                    </button>
+                    <button 
+                      className="dropdown-item"
+                      onClick={() => {
+                        setView('editTrip');
+                        setDropdownOpen(false);
+                      }}
+                    >
+                      Edit Trip
+                    </button>
+                  </>
                 )}
               </div>
             )}
@@ -293,66 +396,90 @@ function App() {
 
       <main className="main-content">
         {resumeDirectToHole && view === 'round' ? (
-          <Hole
-            course={selectedCourse}
-            players={selectedPlayers}
-            currentHole={currentHole}
-            setCurrentHole={setCurrentHole}
-            isRoundFinished={isRoundFinished}
-            setIsRoundFinished={setIsRoundFinished}
-            selectedTrip={selectedTrip}
-            roundType={roundType}
-            onSubmitRound={() => {
-              setCurrentHole(0);
-              setSelectedCourse(null);
-              setRoundStarted(false);
-              setSelectedPlayers([]);
-              setIsRoundFinished(false);
-              setResumeDirectToHole(false);
-              setRoundType('full');
-              setView('leaderboard');
-            }}
-          />
+          <ErrorBoundary componentName="Hole">
+            <Hole
+              course={selectedCourse}
+              players={selectedPlayers}
+              currentHole={currentHole}
+              setCurrentHole={setCurrentHole}
+              isRoundFinished={isRoundFinished}
+              setIsRoundFinished={setIsRoundFinished}
+              selectedTrip={selectedTrip}
+              roundType={roundType}
+              onSubmitRound={() => {
+                setCurrentHole(0);
+                setSelectedCourse(null);
+                setRoundStarted(false);
+                setSelectedPlayers([]);
+                setIsRoundFinished(false);
+                setResumeDirectToHole(false);
+                setRoundType('full');
+                setView('leaderboard');
+              }}
+            />
+          </ErrorBoundary>
         ) : view === 'round' ? (
-          <RoundStart
-            currentUserID={user.uid}
-            currentHole={currentHole}
-            setCurrentHole={setCurrentHole}
-            selectedCourse={selectedCourse}
-            setSelectedCourse={setSelectedCourse}
-            roundStarted={roundStarted}
-            setRoundStarted={setRoundStarted}
-            selectedPlayers={selectedPlayers}
-            setSelectedPlayers={setSelectedPlayers}
-            isRoundFinished={isRoundFinished}
-            setIsRoundFinished={setIsRoundFinished}
-            setView={setView}
-            selectedTrip={selectedTrip}
-            onSubmitRound={() => {
-              setCurrentHole(0);
-              setSelectedCourse(null); // Don't clear selectedCourse so it can be passed to Leaderboard
-              setRoundStarted(false);
-              setSelectedPlayers([]);
-              setIsRoundFinished(false);
-              setView('leaderboard');
-            }}
-          />
+          <ErrorBoundary componentName="RoundStart">
+            <RoundStart
+              currentUserID={user.uid}
+              currentHole={currentHole}
+              setCurrentHole={setCurrentHole}
+              selectedCourse={selectedCourse}
+              setSelectedCourse={setSelectedCourse}
+              roundStarted={roundStarted}
+              setRoundStarted={setRoundStarted}
+              selectedPlayers={selectedPlayers}
+              setSelectedPlayers={setSelectedPlayers}
+              isRoundFinished={isRoundFinished}
+              setIsRoundFinished={setIsRoundFinished}
+              setView={setView}
+              selectedTrip={selectedTrip}
+              onSubmitRound={() => {
+                setCurrentHole(0);
+                setSelectedCourse(null);
+                setRoundStarted(false);
+                setSelectedPlayers([]);
+                setIsRoundFinished(false);
+                setView('leaderboard');
+              }}
+            />
+          </ErrorBoundary>
         ) : view === 'scorecard' ? (
-          <Scorecard selectedTrip={selectedTrip} />
+          <ErrorBoundary componentName="Scorecard">
+            <Scorecard selectedTrip={selectedTrip} />
+          </ErrorBoundary>
         ) : view === 'trip' ? (
-          <TripScreen currentUser={user} setView={setView} />
+          <ErrorBoundary componentName="TripScreen">
+            <TripScreen currentUser={user} setView={setView} />
+          </ErrorBoundary>
         ) : view === 'tripList' ? (
-          <TripList currentUser={user} setView={setView} setSelectedTrip={setSelectedTrip} />
+          <ErrorBoundary componentName="TripList">
+            <TripList currentUser={user} setView={setView} setSelectedTrip={setSelectedTrip} />
+          </ErrorBoundary>
         ) : view === 'addCourse' ? (
-          <AddCourse onBack={() => setView('round')} />
+          <ErrorBoundary componentName="AddCourse">
+            <AddCourse onBack={() => setView('round')} />
+          </ErrorBoundary>
         ) : view === 'editHandicaps' ? (
-          <EditPlayerHandicap 
-            tripId={selectedTrip?.id} 
-            onBack={() => setView('leaderboard')}
-            onSave={() => setView('leaderboard')}
-          />
+          <ErrorBoundary componentName="EditPlayerHandicap">
+            <EditPlayerHandicap 
+              tripId={selectedTrip?.id} 
+              onBack={() => setView('leaderboard')}
+              onSave={() => setView('leaderboard')}
+            />
+          </ErrorBoundary>
+        ) : view === 'editTrip' ? (
+          <ErrorBoundary componentName="EditTrip">
+            <EditTrip 
+              selectedTrip={selectedTrip}
+              currentUser={user}
+              onBack={() => setView('leaderboard')}
+            />
+          </ErrorBoundary>
         ) : (
-          <Leaderboard currentUser={user} selectedTrip={selectedTrip} />
+          <ErrorBoundary componentName="Leaderboard">
+            <Leaderboard currentUser={user} selectedTrip={selectedTrip} />
+          </ErrorBoundary>
         )}
       </main>
     </div>
