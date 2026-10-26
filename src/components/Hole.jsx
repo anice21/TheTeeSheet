@@ -2,10 +2,16 @@ import React, { useState, useEffect, useRef } from "react";
 import { db } from "../firebase";
 import { collection, query, where, getDocs, updateDoc } from "firebase/firestore";
 import RoundSummary from "./RoundSummary.jsx";
+import { calculateHoleScores, getFallbackHoleHandicaps } from "../utils/scoring/handicap";
 
 
 
 function Hole({ course, players, currentHole: propCurrentHole, setCurrentHole: propSetCurrentHole, isRoundFinished, setIsRoundFinished, onSubmitRound, selectedTrip, roundType = 'full' }) {
+    // State for format (individual or bestball)
+    const [format, setFormat] = useState('individual');
+    const [teamId, setTeamId] = useState(null);
+    const [playerTeamIds, setPlayerTeamIds] = useState({});
+
     // Calculate start and end holes based on round type
     const getHoleRange = () => {
         switch (roundType) {
@@ -75,7 +81,8 @@ function Hole({ course, players, currentHole: propCurrentHole, setCurrentHole: p
                         
                         const constraints = [
                             where("courseId", "==", String(course.courseId)),
-                            where("playerId", "==", String(p.playerId))
+                            where("playerId", "==", String(p.playerId)),
+                            where("isActive", "==", true)
                         ];
                         
                         if (course?.tripRoundID !== undefined && course?.tripRoundID !== null) {
@@ -91,6 +98,16 @@ function Hole({ course, players, currentHole: propCurrentHole, setCurrentHole: p
                             return Array.from({ length: 18 }, (_, h) => getPlayerDefaultScore(p, h));
                         }
                         const roundData = querySnapshot.docs[0].data();
+                        
+                        // Set format and teamId from first player's data (all players in group share these)
+                        if (isMounted && players.indexOf(p) === 0) {
+                            setFormat(roundData.format || 'individual');
+                            setTeamId(roundData.teamId || null);
+                        }
+                        if (isMounted && roundData.teamId) {
+                            setPlayerTeamIds(prev => ({ ...prev, [p.playerId]: roundData.teamId }));
+                        }
+                        
                         if (Array.isArray(roundData.scores)) {
                             return roundData.scores.map((val, h) =>
                                 typeof val === 'number' && val > 0
@@ -130,13 +147,53 @@ function Hole({ course, players, currentHole: propCurrentHole, setCurrentHole: p
         return (typeof saved !== 'undefined' && saved !== 0) ? saved : (course?.pars?.[hole] ?? 1);
     }
 
+    const getPlayerTeamId = (player) => playerTeamIds[player?.playerId] || player?.teamId || 'all-players';
+
+    const getTeamGroups = () => {
+        if (format !== 'bestball') {
+            return [{ id: 'all-players', name: null, players: players.map((player, index) => ({ player, index })) }];
+        }
+
+        const groups = new Map();
+        players.forEach((player, index) => {
+            const id = getPlayerTeamId(player);
+            if (!groups.has(id)) {
+                groups.set(id, { id, name: player?.teamName || null, players: [] });
+            }
+            groups.get(id).players.push({ player, index });
+        });
+        return Array.from(groups.values());
+    };
+
+    // Calculate a team's best score for a specific hole.
+    const calculateTeamScore = (holeIndex, teamPlayers = players) => {
+        if (format !== 'bestball') return null;
+        
+        const scores = teamPlayers.map(({ index }) => allScores[index][holeIndex]);
+        const validScores = scores.filter(s => s > 0);
+        
+        if (validScores.length === 0) return null;
+        return Math.min(...validScores);
+    };
+
+    const isBestScore = (playerIndex, holeIndex, teamPlayers = players) => {
+        if (format !== 'bestball') return false;
+
+        const teamScore = calculateTeamScore(holeIndex, teamPlayers);
+        const playerScore = allScores[playerIndex][holeIndex];
+        return teamScore !== null && playerScore === teamScore && playerScore > 0;
+    };
+
     async function saveHoleScore(player, holeIndex, val) {
         if (!player?.playerId || !course?.courseId || !selectedTrip?.id) return;
         const par = course?.pars?.[holeIndex] ?? 0;
+        const holeHandicaps = course?.holeHandicaps || getFallbackHoleHandicaps();
+        const playerHandicap = Number.isFinite(Number(player.handicap)) ? Number(player.handicap) : 0;
         try {
             const constraints = [
                 where("courseId", "==", String(course.courseId)),
-                where("playerId", "==", String(player.playerId))
+                where("playerId", "==", String(player.playerId)),
+                where("isActive", "==", true)
             ];
             
             if (course?.tripRoundID !== undefined && course?.tripRoundID !== null) {
@@ -154,7 +211,15 @@ function Hole({ course, players, currentHole: propCurrentHole, setCurrentHole: p
                 scores[holeIndex] = val;
                 const scoreToPar = docSnap.data().scoreToPar ? [...docSnap.data().scoreToPar] : Array(18).fill(0);
                 scoreToPar[holeIndex] = val - par;
-                await updateDoc(docRef, { scores, scoreToPar });
+                const calculated = calculateHoleScores(scores, course?.pars, holeHandicaps, docSnap.data().playerHandicap ?? playerHandicap);
+                await updateDoc(docRef, {
+                    scores,
+                    scoreToPar,
+                    playerHandicap: docSnap.data().playerHandicap ?? playerHandicap,
+                    netScores: calculated.netScores,
+                    netScoreToPar: calculated.netScoreToPar,
+                    strokesReceived: calculated.strokesReceived
+                });
             }));
         } catch (err) {
             console.error("Error saving score in Firestore:", err);
@@ -167,11 +232,14 @@ function Hole({ course, players, currentHole: propCurrentHole, setCurrentHole: p
             await Promise.all(players.map(async (p, i) => {
                 const val = allScores[i][currentHole];
                 const par = course?.pars?.[currentHole] ?? 0;
+                const holeHandicaps = course?.holeHandicaps || getFallbackHoleHandicaps();
+                const playerHandicap = Number.isFinite(Number(p.handicap)) ? Number(p.handicap) : 0;
                 if (!selectedTrip?.id) return;
                 try {
                     const constraints = [
                         where("courseId", "==", String(course.courseId)),
-                        where("playerId", "==", String(p.playerId))
+                        where("playerId", "==", String(p.playerId)),
+                        where("isActive", "==", true)
                     ];
                     
                     if (course?.tripRoundID !== undefined && course?.tripRoundID !== null) {
@@ -183,7 +251,7 @@ function Hole({ course, players, currentHole: propCurrentHole, setCurrentHole: p
                         ...constraints
                     );
                     const querySnapshot = await getDocs(q);
-                    querySnapshot.forEach(async (docSnap) => {
+                    await Promise.all(querySnapshot.docs.map(async (docSnap) => {
                         const docRef = docSnap.ref;
                         // Get the full scores array from Firestore, update only the current hole
                         const scores = docSnap.data().scores ? [...docSnap.data().scores] : Array(18).fill(0);
@@ -191,8 +259,16 @@ function Hole({ course, players, currentHole: propCurrentHole, setCurrentHole: p
                         // Update scoreToPar for this hole
                         const scoreToPar = docSnap.data().scoreToPar ? [...docSnap.data().scoreToPar] : Array(18).fill(0);
                         scoreToPar[currentHole] = val - par;
-                        await updateDoc(docRef, { scores, scoreToPar });
-                    });
+                        const calculated = calculateHoleScores(scores, course?.pars, holeHandicaps, docSnap.data().playerHandicap ?? playerHandicap);
+                        await updateDoc(docRef, {
+                            scores,
+                            scoreToPar,
+                            playerHandicap: docSnap.data().playerHandicap ?? playerHandicap,
+                            netScores: calculated.netScores,
+                            netScoreToPar: calculated.netScoreToPar,
+                            strokesReceived: calculated.strokesReceived
+                        });
+                    }));
                 } catch (err) {
                     console.error("Error updating score in Firestore:", err);
                 }
@@ -289,28 +365,39 @@ function Hole({ course, players, currentHole: propCurrentHole, setCurrentHole: p
                 {(!players || players.length === 0) ? (
                     <div>No players</div>
                 ) : (
-                    <ul className="hole-player-list">
-                        {players.map((p, i) => (
-                            <li key={i} className="hole-player-list-item">
-                                <div className="hole-player-list-item-inner">
-                                    <PlayerScoreDropdown
-                                        player={p}
-                                        value={allScores[i][currentHole]}
-                                        onChange={(val) => {
-                                            setAllScores((prev) => {
-                                                const next = prev.map(arr => [...arr]);
-                                                next[i][currentHole] = val;
-                                                return next;
-                                            });
-                                            saveHoleScore(p, currentHole, val);
-                                        }}
-                                    />
+                    getTeamGroups().map((group) => (
+                        <section key={group.id} style={{ marginBottom: format === 'bestball' ? '1.25rem' : 0 }}>
+                            <ul className="hole-player-list">
+                                {group.players.map(({ player: p, index: i }) => (
+                                    <li key={p.playerId || i} className="hole-player-list-item">
+                                        <div className="hole-player-list-item-inner">
+                                            <PlayerScoreDropdown
+                                                player={p}
+                                                value={allScores[i][currentHole]}
+                                                isBestScore={isBestScore(i, currentHole, group.players)}
+                                                onChange={(val) => {
+                                                    setAllScores((prev) => {
+                                                        const next = prev.map(arr => [...arr]);
+                                                        next[i][currentHole] = val;
+                                                        return next;
+                                                    });
+                                                    saveHoleScore(p, currentHole, val);
+                                                }}
+                                            />
+                                        </div>
+                                    </li>
+                                ))}
+                            </ul>
+                            {format === 'bestball' && (
+                                <div style={{ marginTop: '0.5rem', padding: '0.65rem', backgroundColor: '#f8f9fa', borderRadius: '6px', textAlign: 'center', border: '1px solid #28a745' }}>
+                                    Team Score: <strong>{calculateTeamScore(currentHole, group.players) || '-'}</strong>
                                 </div>
-                            </li>
-                        ))}
-                    </ul>
+                            )}
+                        </section>
+                    ))
                 )}
             </div>
+            
             <div className="nav-buttons">
                 <button onClick={prevHole} disabled={currentHole === startHole}> Previous Hole </button>
                 <button onClick={nextHole}>
@@ -321,14 +408,22 @@ function Hole({ course, players, currentHole: propCurrentHole, setCurrentHole: p
     );
 }
 
-function PlayerScoreDropdown({ player, value, onChange }) {
+function PlayerScoreDropdown({ player, value, isBestScore, onChange }) {
     const handleChange = (e) => {
         const n = Number(e.target.value);
         onChange(n);
     };
     return (
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-            <span className="player-name">{player?.name || String(player)}</span>
+            <span className="player-name" style={{ 
+                display: 'flex', 
+                alignItems: 'center',
+                fontSize: '1rem',
+                fontWeight: isBestScore ? 'bold' : 'normal',
+                color: isBestScore ? '#28a745' : '#000'
+            }}>
+                {player?.name || String(player)}
+            </span>
             <select className="select-dropdown player-score-select" style={{ width: '25%', marginLeft: 'auto' }} value={value} onChange={handleChange}>
                 {[...Array(10)].map((_, idx) => (
                     <option key={idx + 1} value={idx + 1}>{idx + 1}</option>

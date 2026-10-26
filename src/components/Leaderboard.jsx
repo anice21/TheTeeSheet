@@ -3,7 +3,8 @@ export default Leaderboard;
 
 import React, { useState, useEffect } from 'react';
 import { db } from '../firebase';
-import { collection, getDocs, query, where } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
+import { calculateHoleScores, getFallbackHoleHandicaps } from '../utils/scoring/handicap';
 
 
 function Leaderboard({ currentUser, selectedTrip }) {
@@ -71,7 +72,14 @@ function Leaderboard({ currentUser, selectedTrip }) {
   const handleSelectedCourse = async (e) => {
     const roundId = e.target.value;
     const courseObj = courses.find(c => c.id === roundId);
-    setSelectedCourse(courseObj || null);
+    if (courseObj?.courseId) {
+      const courseSnapshot = await getDoc(doc(db, 'courses', String(courseObj.courseId)));
+      setSelectedCourse(courseSnapshot.exists()
+        ? { ...courseObj, ...courseSnapshot.data(), id: courseObj.id, courseId: courseSnapshot.id }
+        : courseObj);
+    } else {
+      setSelectedCourse(courseObj || null);
+    }
     await fetchRoundsForCourse(courseObj || null);
   };
 
@@ -106,13 +114,26 @@ function Leaderboard({ currentUser, selectedTrip }) {
         return;
       }
 
-      const inProgressRound = querySnapshot.docs
+      // Sort by tripRoundID descending to get the most recent round
+      const rounds = querySnapshot.docs
         .map(doc => ({ ...doc.data(), id: doc.id }))
-        .find(round => round.isActive === true) || querySnapshot.docs[0].data();
+        .sort((a, b) => Number(b.tripRoundID || 0) - Number(a.tripRoundID || 0));
+      
+      console.log('Leaderboard - Unfinished rounds:', rounds.map(r => ({ tripRoundID: r.tripRoundID, isActive: r.isActive })));
+      
+      const inProgressRound = rounds.find(round => round.isActive === true) || rounds[0];
+      console.log('Leaderboard - Selected round:', { tripRoundID: inProgressRound.tripRoundID });
 
       const courseObj = courses.find(c => c.tripRoundID === inProgressRound.tripRoundID);
       setMode('live');
-      setSelectedCourse(courseObj || null);
+      if (courseObj?.courseId) {
+        const courseSnapshot = await getDoc(doc(db, 'courses', String(courseObj.courseId)));
+        setSelectedCourse(courseSnapshot.exists()
+          ? { ...courseObj, ...courseSnapshot.data(), id: courseObj.id, courseId: courseSnapshot.id }
+          : courseObj);
+      } else {
+        setSelectedCourse(courseObj || null);
+      }
       await fetchRoundsForCourse(courseObj || null);
       setIsDefaultingView(false);
     };
@@ -128,17 +149,94 @@ function Leaderboard({ currentUser, selectedTrip }) {
     }
   }, [mode]);
 
+  // Calculate team leaderboard
+  const calculateTeamLeaderboard = React.useMemo(() => {
+    if (!rounds || rounds.length === 0) return [];
+    
+    const bestBallRounds = rounds.filter(r => r.format === 'bestball');
+    if (bestBallRounds.length === 0) return [];
+    
+    // Group by teamId
+    const teams = {};
+    bestBallRounds.forEach(round => {
+      const teamId = round.teamId;
+      if (!teamId) return;
+      
+      if (!teams[teamId]) {
+        teams[teamId] = {
+          teamId,
+          teamName: round.teamName || `Team ${teamId.substring(0, 6)}`,
+          groupId: round.groupId,
+          players: [],
+          teamScores: Array(18).fill(null),
+          teamScoreToPar: 0
+        };
+      }
+      
+      teams[teamId].players.push({
+        playerId: round.playerId,
+        playerName: round.playerName,
+        scores: round.scores,
+        netScores: scoreType === 'net'
+          ? (Array.isArray(round.netScores)
+            ? round.netScores
+            : calculateHoleScores(
+                round.scores,
+                selectedCourse?.pars,
+                selectedCourse?.holeHandicaps || getFallbackHoleHandicaps(),
+                round.playerHandicap
+              ).netScores)
+          : null,
+        scoreToPar: round.scoreToPar
+      });
+    });
+    
+    // Calculate best ball scores for each team
+    Object.values(teams).forEach(team => {
+      for (let hole = 0; hole < 18; hole++) {
+        const holeScores = team.players
+          .map(p => scoreType === 'net' ? p.netScores?.[hole] : p.scores?.[hole])
+          .filter(s => typeof s === 'number' && s > 0);
+        
+        if (holeScores.length > 0) {
+          team.teamScores[hole] = Math.min(...holeScores);
+        }
+      }
+      
+      // Calculate the team's score relative to par using its best score on each hole.
+      if (Array.isArray(selectedCourse?.pars)) {
+        team.teamScoreToPar = team.teamScores.reduce((sum, score, idx) => {
+          if (score === null) return sum;
+          return sum + (score - (selectedCourse.pars[idx] ?? 0));
+        }, 0);
+      } else {
+        team.teamScoreToPar = Array.from({ length: 18 }, (_, hole) => {
+          const holeScoresToPar = team.players
+            .map(player => ({ score: player.scores?.[hole], toPar: player.scoreToPar?.[hole] }))
+            .filter(({ score, toPar }) => score > 0 && typeof toPar === 'number')
+            .map(({ toPar }) => toPar);
+
+          return holeScoresToPar.length > 0 ? Math.min(...holeScoresToPar) : 0;
+        }).reduce((sum, scoreToPar) => sum + scoreToPar, 0);
+      }
+    });
+    
+    return Object.values(teams).sort((a, b) => a.teamScoreToPar - b.teamScoreToPar);
+  }, [rounds, selectedCourse, scoreType]);
+  
+  const hasBestBallRounds = rounds && rounds.some(r => r.format === 'bestball');
+  
   const sortedRounds = React.useMemo(() => {
     if (!rounds) return [];
     return [...rounds].sort((a, b) => {
       let aName = a.playerName || a.playerId || '';
       let bName = b.playerName || b.playerId || '';
       // Score to Par: always sum all values in scoreToPar if present, else null
-      const aScoreToPar = Array.isArray(a.scoreToPar)
-        ? a.scoreToPar.reduce((sum, v) => sum + (typeof v === 'number' ? v : 0), 0)
+      const aScoreToPar = Array.isArray(scoreType === 'net' ? a.netScoreToPar : a.scoreToPar)
+        ? (scoreType === 'net' ? a.netScoreToPar : a.scoreToPar).reduce((sum, v) => sum + (typeof v === 'number' ? v : 0), 0)
         : null;
-      const bScoreToPar = Array.isArray(b.scoreToPar)
-        ? b.scoreToPar.reduce((sum, v) => sum + (typeof v === 'number' ? v : 0), 0)
+      const bScoreToPar = Array.isArray(scoreType === 'net' ? b.netScoreToPar : b.scoreToPar)
+        ? (scoreType === 'net' ? b.netScoreToPar : b.scoreToPar).reduce((sum, v) => sum + (typeof v === 'number' ? v : 0), 0)
         : null;
       if (sortConfig.key === 'name') {
         if (aName < bName) return sortConfig.direction === 'asc' ? -1 : 1;
@@ -153,7 +251,7 @@ function Leaderboard({ currentUser, selectedTrip }) {
       }
       return 0;
     });
-  }, [rounds, sortConfig]);
+  }, [rounds, sortConfig, scoreType]);
 
   const handleSort = (key) => {
     setSortConfig((prev) => {
@@ -204,9 +302,15 @@ function Leaderboard({ currentUser, selectedTrip }) {
             score = round.scores.reduce((sum, v) => sum + (typeof v === 'number' ? v : 0), 0);
             totalScore += typeof score === 'number' ? score : 0;
           } else if (scoreType === 'net') {
-            const gross = round.scores.reduce((sum, v) => sum + (typeof v === 'number' ? v : 0), 0);
-            const handicap = typeof round.playerHandicap === 'number' ? round.playerHandicap : 0;
-            score = gross - handicap;
+            const netScores = Array.isArray(round.netScores)
+              ? round.netScores
+              : calculateHoleScores(
+                  round.scores,
+                  courses.find(course => course.tripRoundID === round.tripRoundID)?.pars,
+                  courses.find(course => course.tripRoundID === round.tripRoundID)?.holeHandicaps || getFallbackHoleHandicaps(),
+                  round.playerHandicap
+                ).netScores;
+            score = netScores.reduce((sum, v) => sum + (typeof v === 'number' && v > 0 ? v : 0), 0);
             totalScore += typeof score === 'number' ? score : 0;
           }
         }
@@ -242,6 +346,95 @@ function Leaderboard({ currentUser, selectedTrip }) {
       }
     });
   }, [completedRounds, completedCourses, scoreType, sortConfig]);
+
+  const sortedTournamentTeams = React.useMemo(() => {
+    if (!completedRounds || !completedCourses) return [];
+
+    const teamMap = {};
+    completedRounds
+      .filter(round => round.format === 'bestball' && round.teamId)
+      .forEach(round => {
+        const teamMembers = completedRounds
+          .filter(candidate => (
+            candidate.format === 'bestball' &&
+            candidate.tripRoundID === round.tripRoundID &&
+            candidate.teamId === round.teamId
+          ))
+          .map(candidate => candidate.playerId || candidate.playerName)
+          .sort()
+          .join('|');
+        const teamKey = teamMembers || round.teamId;
+
+        if (!teamMap[teamKey]) {
+          teamMap[teamKey] = {
+            teamKey,
+            teamName: round.teamName || 'Team',
+            players: [],
+            courseScores: [],
+            totalScore: 0
+          };
+        }
+
+        const playerName = round.playerName || round.playerId;
+        if (!teamMap[teamKey].players.includes(playerName)) {
+          teamMap[teamKey].players.push(playerName);
+        }
+      });
+
+    Object.values(teamMap).forEach(team => {
+      team.courseScores = completedCourses.map(course => {
+        const teamRounds = completedRounds.filter(round => {
+          if (round.format !== 'bestball' || round.tripRoundID !== course.tripRoundID) return false;
+          const members = completedRounds
+            .filter(candidate => (
+              candidate.format === 'bestball' &&
+              candidate.tripRoundID === round.tripRoundID &&
+              candidate.teamId === round.teamId
+            ))
+            .map(candidate => candidate.playerId || candidate.playerName)
+            .sort()
+            .join('|');
+          return members === team.teamKey;
+        });
+
+        if (teamRounds.length === 0) return '-';
+
+        const teamScores = Array.from({ length: 18 }, (_, hole) => {
+          const holeScores = teamRounds
+            .map(round => scoreType === 'net' ? round.netScores?.[hole] : round.scores?.[hole])
+            .filter(score => typeof score === 'number' && score > 0);
+          return holeScores.length > 0 ? Math.min(...holeScores) : null;
+        });
+
+        return teamScores.reduce((sum, score) => sum + (score || 0), 0);
+      });
+
+      team.totalScore = team.courseScores.reduce(
+        (sum, score) => sum + (typeof score === 'number' ? score : 0),
+        0
+      );
+    });
+
+    return Object.values(teamMap).sort((a, b) => {
+      if (sortConfig.key === 'name') {
+        return sortConfig.direction === 'asc'
+          ? a.teamName.localeCompare(b.teamName)
+          : b.teamName.localeCompare(a.teamName);
+      }
+      if (sortConfig.key === 'total') {
+        return sortConfig.direction === 'asc' ? a.totalScore - b.totalScore : b.totalScore - a.totalScore;
+      }
+      const index = completedCourses.findIndex(course => course.id === sortConfig.key);
+      const aScore = a.courseScores[index];
+      const bScore = b.courseScores[index];
+      if (aScore === '-' && bScore === '-') return 0;
+      if (aScore === '-') return 1;
+      if (bScore === '-') return -1;
+      return sortConfig.direction === 'asc' ? aScore - bScore : bScore - aScore;
+    });
+  }, [completedRounds, completedCourses, scoreType, sortConfig]);
+
+  const hasCompletedBestBallRounds = completedRounds.some(round => round.format === 'bestball');
 
   // Tournament leaderboard sort handler
   const handleTournamentSort = (key) => {
@@ -281,6 +474,7 @@ function Leaderboard({ currentUser, selectedTrip }) {
           Tournament Leaderboard
         </button>
       </div>
+      
       {mode === 'live' && (
         <label>
           Course:
@@ -305,11 +499,56 @@ function Leaderboard({ currentUser, selectedTrip }) {
         </label>
       )}
 
+      {mode === 'live' && selectedCourse && (
+        <div className="leaderboard-tournament-scoretype-bar" style={{ marginTop: '1rem' }}>
+          <select
+            className="select-dropdown"
+            name="liveScoreType"
+            value={scoreType}
+            onChange={e => setScoreType(e.target.value)}
+          >
+            <option value="gross">Gross</option>
+            <option value="net">Net</option>
+          </select>
+        </div>
+      )}
+
       {selectedCourse && mode === 'live' && (
         <div className="leaderboard-live-table-wrapper">
           {/* Removed course name header for Live Leaderboard */}
           {rounds.length === 0 ? (
             <p className="leaderboard-empty-msg">No rounds found for this course.</p>
+          ) : hasBestBallRounds ? (
+            <table className="leaderboard-table leaderboard-table-live">
+              <thead>
+                <tr className="leaderboard-header-row">
+                  <th className="leaderboard-th leaderboard-th-place leaderboard-th-live-place"></th>
+                  <th className="leaderboard-th leaderboard-th-name">Players</th>
+                  <th className="leaderboard-th leaderboard-th-scoretopar">Total</th>
+                  <th className="leaderboard-th leaderboard-th-hole">Thru</th>
+                </tr>
+              </thead>
+              <tbody>
+                {calculateTeamLeaderboard.map((team, idx) => {
+                  // Calculate holes completed (thru)
+                  const holesCompleted = team.teamScores.filter(s => s !== null).length;
+                  const thru = holesCompleted === 18 ? 'F' : holesCompleted;
+                  
+                  return (
+                    <tr key={team.teamId} className={idx % 2 === 0 ? 'leaderboard-row-even' : 'leaderboard-row-odd'}>
+                      <td className="leaderboard-td leaderboard-td-place leaderboard-td-live-place">{idx + 1}</td>
+                      <td className="leaderboard-td leaderboard-td-name">{team.players.map(p => p.playerName).join(', ')}</td>
+                      <td className="leaderboard-td leaderboard-td-scoretopar" data-score={team.teamScoreToPar}>{
+                        team.teamScoreToPar === 0
+                          ? 'E'
+                          : (team.teamScoreToPar > 0 ? `+${team.teamScoreToPar}` : team.teamScoreToPar)
+                      }</td>
+                      <td className="leaderboard-td leaderboard-td-hole">{thru}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           ) : (
             <table className="leaderboard-table leaderboard-table-live">
               <thead>
@@ -334,8 +573,9 @@ function Leaderboard({ currentUser, selectedTrip }) {
                   const places = [];
                   const tieFlags = [];
                   sortedRounds.forEach((round, idx) => {
-                    const scoreToPar = Array.isArray(round.scoreToPar)
-                      ? round.scoreToPar.reduce((sum, v) => sum + (typeof v === 'number' ? v : 0), 0)
+                    const roundScoreToPar = scoreType === 'net' ? round.netScoreToPar : round.scoreToPar;
+                    const scoreToPar = Array.isArray(roundScoreToPar)
+                      ? roundScoreToPar.reduce((sum, v) => sum + (typeof v === 'number' ? v : 0), 0)
                       : null;
                     let place;
                     let isTied = false;
@@ -365,8 +605,9 @@ function Leaderboard({ currentUser, selectedTrip }) {
                     tieFlags.push(isTied);
                   });
                   return sortedRounds.map((round, idx) => {
-                    const scoreToPar = Array.isArray(round.scoreToPar)
-                      ? round.scoreToPar.reduce((sum, v) => sum + (typeof v === 'number' ? v : 0), 0)
+                    const roundScoreToPar = scoreType === 'net' ? round.netScoreToPar : round.scoreToPar;
+                    const scoreToPar = Array.isArray(roundScoreToPar)
+                      ? roundScoreToPar.reduce((sum, v) => sum + (typeof v === 'number' ? v : 0), 0)
                       : null;
                     // Hole: display 'F' if all scores are non-zero, else count of non-zero scores
                     let hole = 0;
@@ -425,7 +666,7 @@ function Leaderboard({ currentUser, selectedTrip }) {
                       className="leaderboard-th leaderboard-th-name leaderboard-th-tournament-name"
                       onClick={() => handleTournamentSort('name')}
                     >
-                      <span className="leaderboard-th-label">Name</span>
+                      <span className="leaderboard-th-label">{hasCompletedBestBallRounds ? 'Players' : 'Name'}</span>
                     </th>
                     {completedCourses.map((course, idx) => (
                       <th
@@ -445,21 +686,29 @@ function Leaderboard({ currentUser, selectedTrip }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {sortedTournamentPlayers.map((player, idx) => (
-                    <tr key={player.playerId || player.playerName || idx} className={idx % 2 === 0 ? 'leaderboard-row-even' : 'leaderboard-row-odd'}>
-                      <td className="leaderboard-td leaderboard-td-place leaderboard-td-tournament-place">{idx + 1}</td>
-                      <td className="leaderboard-td leaderboard-td-name leaderboard-td-tournament-name">{player.playerName || player.playerId}</td>
-                      {player.courseScores.map((score, i) => (
-                        <td
-                          key={i}
-                          className="leaderboard-td leaderboard-td-tournament-round"
-                        >
-                          {score}
-                        </td>
+                  {hasCompletedBestBallRounds
+                    ? sortedTournamentTeams.map((team, idx) => (
+                        <tr key={team.teamKey} className={idx % 2 === 0 ? 'leaderboard-row-even' : 'leaderboard-row-odd'}>
+                          <td className="leaderboard-td leaderboard-td-place leaderboard-td-tournament-place">{idx + 1}</td>
+                          <td className="leaderboard-td leaderboard-td-name leaderboard-td-tournament-name">
+                            {team.players.join(', ')}
+                          </td>
+                          {team.courseScores.map((score, i) => (
+                            <td key={i} className="leaderboard-td leaderboard-td-tournament-round">{score}</td>
+                          ))}
+                          <td className="leaderboard-td leaderboard-td-tournament-total">{team.totalScore}</td>
+                        </tr>
+                      ))
+                    : sortedTournamentPlayers.map((player, idx) => (
+                        <tr key={player.playerId || player.playerName || idx} className={idx % 2 === 0 ? 'leaderboard-row-even' : 'leaderboard-row-odd'}>
+                          <td className="leaderboard-td leaderboard-td-place leaderboard-td-tournament-place">{idx + 1}</td>
+                          <td className="leaderboard-td leaderboard-td-name leaderboard-td-tournament-name">{player.playerName || player.playerId}</td>
+                          {player.courseScores.map((score, i) => (
+                            <td key={i} className="leaderboard-td leaderboard-td-tournament-round">{score}</td>
+                          ))}
+                          <td className="leaderboard-td leaderboard-td-tournament-total">{player.totalScore}</td>
+                        </tr>
                       ))}
-                      <td className="leaderboard-td leaderboard-td-tournament-total">{player.totalScore}</td>
-                    </tr>
-                  ))}
                 </tbody>
               </table>
             </div>

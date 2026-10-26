@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { db } from './firebase';
 import { getAuth, onAuthStateChanged } from 'firebase/auth';
-import { collection, query, where, getDocs } from 'firebase/firestore';
+import { collection, doc, getDoc, query, where, getDocs } from 'firebase/firestore';
 import AuthForm from './components/AuthForm';
 import './index.css'
 import RoundStart from './components/roundStart'
@@ -29,6 +29,7 @@ function App() {
   const [selectedPlayers, setSelectedPlayers] = useState([]);
   const [isRoundFinished, setIsRoundFinished] = useState(false);
   const [user, setUser] = useState(null);
+  const [isSuperUser, setIsSuperUser] = useState(false);
   const [resumeDirectToHole, setResumeDirectToHole] = useState(false);
   const [checkingRound, setCheckingRound] = useState(true);
   const [selectedTrip, setSelectedTrip] = useState(null);
@@ -37,8 +38,11 @@ function App() {
   // On mount, listen for auth state changes
   useEffect(() => {
     const auth = getAuth();
-    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
+        setUser(firebaseUser);
+        const tokenResult = await firebaseUser.getIdTokenResult();
+        setIsSuperUser(tokenResult.claims.superUser === true);
         logger.info('User authenticated', {
           userId: firebaseUser.uid,
           email: firebaseUser.email,
@@ -46,12 +50,13 @@ function App() {
         });
         logger.setContext({ userId: firebaseUser.uid });
       } else {
+        setUser(null);
+        setIsSuperUser(false);
         logger.info('User logged out', {
           category: LOG_CATEGORIES.AUTH,
         });
         logger.clearContext();
       }
-      setUser(firebaseUser);
     });
     return () => unsubscribe();
   }, [logger]);
@@ -156,13 +161,13 @@ function App() {
               let courseObj = null;
               if (!courseDocSnap.empty) {
                 const doc = courseDocSnap.docs[0];
-                courseObj = { courseId: doc.id, ...doc.data() };
+                courseObj = { courseId: doc.id, ...doc.data(), tripRoundID: roundData.tripRoundID };
               } else {
-                courseObj = { courseId: roundData.courseId, name: roundData.courseName || 'Unnamed Course' };
+                courseObj = { courseId: roundData.courseId, name: roundData.courseName || 'Unnamed Course', tripRoundID: roundData.tripRoundID };
               }
               setSelectedCourse(courseObj);
             } catch (err) {
-              setSelectedCourse({ courseId: roundData.courseId, name: roundData.courseName || 'Unnamed Course' });
+              setSelectedCourse({ courseId: roundData.courseId, name: roundData.courseName || 'Unnamed Course', tripRoundID: roundData.tripRoundID });
             }
             
             setIsRoundFinished(false);
@@ -188,6 +193,82 @@ function App() {
     }
   }, [user, logger]);
 
+  // Rehydrate the active round when navigating back to Current Round.
+  useEffect(() => {
+    if (view !== 'round' || !user || !selectedTrip || (resumeDirectToHole && selectedCourse && selectedPlayers.length > 0)) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const restoreCurrentRound = async () => {
+      try {
+        const scoreKeeperQuery = query(
+          collection(db, 'trips', selectedTrip.id, 'scores'),
+          where('scoreKeeper', '==', true),
+          where('playerId', '==', user.uid),
+          where('isRoundFinished', '==', false)
+        );
+        const scoreKeeperSnapshot = await getDocs(scoreKeeperQuery);
+        const activeScoreKeeperDoc = scoreKeeperSnapshot.docs.find(scoreDoc => scoreDoc.data().isActive !== false);
+        if (!activeScoreKeeperDoc || cancelled) return;
+
+        const currentRound = activeScoreKeeperDoc.data();
+        if (!currentRound.groupId) return;
+
+        const groupQuery = query(
+          collection(db, 'trips', selectedTrip.id, 'scores'),
+          where('groupId', '==', currentRound.groupId)
+        );
+        const groupSnapshot = await getDocs(groupQuery);
+        if (groupSnapshot.empty || cancelled) return;
+
+        const groupRounds = groupSnapshot.docs
+          .map(scoreDoc => scoreDoc.data())
+          .filter(round => round.isActive !== false && round.isRoundFinished === false);
+        const firstZeroIdx = groupRounds.reduce((earliest, round) => {
+          if (!Array.isArray(round.scores)) return earliest;
+          const zeroIndex = round.scores.findIndex(score => score === 0);
+          return zeroIndex !== -1 && (earliest === null || zeroIndex < earliest) ? zeroIndex : earliest;
+        }, null);
+
+        const courseSnapshot = await getDoc(doc(db, 'courses', String(currentRound.courseId)));
+        if (cancelled) return;
+
+        const courseData = courseSnapshot.exists()
+          ? { courseId: courseSnapshot.id, ...courseSnapshot.data(), tripRoundID: currentRound.tripRoundID }
+          : {
+              courseId: currentRound.courseId,
+              tripRoundID: currentRound.tripRoundID,
+              name: currentRound.courseName || 'Unnamed Course'
+            };
+
+        setSelectedPlayers(groupRounds.map(round => ({
+          ...round,
+          name: round.playerName || round.name || 'Unnamed Player',
+          playerId: round.playerId,
+          scores: round.scores
+        })));
+        setSelectedCourse(courseData);
+        setRoundType(currentRound.roundType || 'full');
+        setCurrentHole(firstZeroIdx ?? 0);
+        setRoundStarted(true);
+        setIsRoundFinished(false);
+        setResumeDirectToHole(true);
+      } catch (error) {
+        logger.error('Error restoring current round', {
+          error,
+          category: LOG_CATEGORIES.ROUND,
+        });
+      }
+    };
+
+    restoreCurrentRound();
+    return () => {
+      cancelled = true;
+    };
+  }, [view, user, selectedTrip, resumeDirectToHole, selectedCourse, selectedPlayers.length, logger]);
+
   // Fetch most recent trip for user after round check
   useEffect(() => {
     async function fetchMostRecentTrip(userId) {
@@ -201,8 +282,26 @@ function App() {
         
         const userTrips = [];
         
-        // For each trip, check if the user is in the players subcollection
+        // Super users can see every trip; regular users must be trip members.
         for (const tripDoc of tripsSnapshot.docs) {
+          if (isSuperUser) {
+            userTrips.push({
+              id: tripDoc.id,
+              ...tripDoc.data()
+            });
+            continue;
+          }
+
+          const tripData = tripDoc.data();
+          // Public trips (isPrivate === false) are visible to any logged-in user.
+          if (tripData.isPrivate === false) {
+            userTrips.push({
+              id: tripDoc.id,
+              ...tripData
+            });
+            continue;
+          }
+
           const playersSnapshot = await getDocs(
             collection(db, 'trips', tripDoc.id, 'players')
           );
@@ -214,7 +313,7 @@ function App() {
           if (isUserInTrip) {
             userTrips.push({
               id: tripDoc.id,
-              ...tripDoc.data()
+              ...tripData
             });
           }
         }
@@ -277,7 +376,7 @@ function App() {
     if (user && !checkingRound) {
       fetchMostRecentTrip(user.uid);
     }
-  }, [user, checkingRound, resumeDirectToHole, logger]);
+  }, [user, checkingRound, resumeDirectToHole, isSuperUser, logger]);
 
   // Log view changes
   useEffect(() => {
@@ -434,6 +533,8 @@ function App() {
               setIsRoundFinished={setIsRoundFinished}
               setView={setView}
               selectedTrip={selectedTrip}
+              roundType={roundType}
+              setRoundType={setRoundType}
               onSubmitRound={() => {
                 setCurrentHole(0);
                 setSelectedCourse(null);
@@ -454,7 +555,7 @@ function App() {
           </ErrorBoundary>
         ) : view === 'tripList' ? (
           <ErrorBoundary componentName="TripList">
-            <TripList currentUser={user} setView={setView} setSelectedTrip={setSelectedTrip} />
+            <TripList currentUser={user} isSuperUser={isSuperUser} setView={setView} setSelectedTrip={setSelectedTrip} />
           </ErrorBoundary>
         ) : view === 'addCourse' ? (
           <ErrorBoundary componentName="AddCourse">

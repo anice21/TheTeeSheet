@@ -20,6 +20,12 @@ service cloud.firestore {
     // === EXISTING RULES (example - replace with your actual rules) ===
     
     // Trips
+    // NOTE: trips have an `isPrivate` field (true by default). Public trips
+    // (isPrivate == false) should be readable by any authenticated user;
+    // private trips should only be readable by the organizer and invited
+    // players (see the `players` subcollection). This example currently
+    // allows any authenticated user to read/write for simplicity - tighten
+    // this for production use.
     match /trips/{tripId} {
       allow read, write: if request.auth != null;
       

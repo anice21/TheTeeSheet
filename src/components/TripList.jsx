@@ -2,43 +2,63 @@ import React, { useState, useEffect } from 'react';
 import { db } from '../firebase';
 import { collection, getDocs, query, where } from 'firebase/firestore';
 
-function TripList({ currentUser, setView, setSelectedTrip }) {
+function TripList({ currentUser, isSuperUser = false, setView, setSelectedTrip }) {
   const [trips, setTrips] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     fetchUserTrips();
-  }, [currentUser]);
+  }, [currentUser, isSuperUser]);
 
   const fetchUserTrips = async () => {
     setLoading(true);
     try {
-      // Get all active trips
-      const tripsQuery = query(
-        collection(db, 'trips'),
-        where('isActive', '==', true)
-      );
-      const tripsSnapshot = await getDocs(tripsQuery);
+      // Get all trips (not filtering by isActive so all trips are visible)
+      const tripsSnapshot = await getDocs(collection(db, 'trips'));
+      
+      console.log('TripList - Total active trips found:', tripsSnapshot.docs.length);
+      console.log('TripList - Current user ID:', currentUser.uid);
       
       const userTrips = [];
       
-      // For each trip, check if the user is in the players subcollection
+      // Super users can see every trip; regular users must be trip members.
       for (const tripDoc of tripsSnapshot.docs) {
+        const tripData = tripDoc.data();
+        if (isSuperUser) {
+          userTrips.push({ id: tripDoc.id, ...tripData });
+          continue;
+        }
+        // Public trips (isPrivate === false) are visible to any logged-in user.
+        if (tripData.isPrivate === false) {
+          userTrips.push({ id: tripDoc.id, ...tripData });
+          continue;
+        }
         const playersSnapshot = await getDocs(
           collection(db, 'trips', tripDoc.id, 'players')
         );
         
+        console.log(`TripList - Trip "${tripData.name}" has ${playersSnapshot.docs.length} players`);
+        
         const isUserInTrip = playersSnapshot.docs.some(
-          playerDoc => playerDoc.data().playerId === currentUser.uid
+          playerDoc => {
+            const playerId = playerDoc.data().playerId;
+            const match = playerId === currentUser.uid;
+            console.log(`  Player ID: ${playerId}, Match: ${match}`);
+            return match;
+          }
         );
+        
+        console.log(`TripList - User is in trip "${tripData.name}": ${isUserInTrip}`);
         
         if (isUserInTrip) {
           userTrips.push({
             id: tripDoc.id,
-            ...tripDoc.data()
+            ...tripData
           });
         }
       }
+      
+      console.log('TripList - Total trips user is in:', userTrips.length);
       
       // Sort trips by start date (most recent first)
       userTrips.sort((a, b) => {
@@ -87,6 +107,9 @@ function TripList({ currentUser, setView, setSelectedTrip }) {
                 </div>
                 <div className="trip-card-row">
                   <strong>Dates:</strong> {trip.startDate?.toDate().toLocaleDateString()} - {trip.endDate?.toDate().toLocaleDateString()}
+                </div>
+                <div className="trip-card-row">
+                  <strong>Visibility:</strong> {trip.isPrivate === false ? 'Public' : 'Private'}
                 </div>
                 {trip.description && (
                   <div className="trip-card-description">

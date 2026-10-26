@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { db } from '../firebase';
 import { collection, addDoc, Timestamp } from 'firebase/firestore';
+import { isValidHoleHandicaps } from '../utils/scoring/handicap';
 
 const US_STATES = [
   'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA',
@@ -14,6 +15,9 @@ function AddCourse({ onBack }) {
   const [state, setState] = useState('');
   const [courseName, setCourseName] = useState('');
   const [pars, setPars] = useState(Array(18).fill(4));
+  const [holeHandicaps, setHoleHandicaps] = useState(
+    Array.from({ length: 18 }, (_, index) => index + 1)
+  );
   const [saving, setSaving] = useState(false);
 
   const handleParChange = (holeIndex, value) => {
@@ -25,6 +29,13 @@ function AddCourse({ onBack }) {
     }
   };
 
+  const handleHoleHandicapChange = (holeIndex, value) => {
+    const handicapValue = parseInt(value, 10);
+    const newHoleHandicaps = [...holeHandicaps];
+    newHoleHandicaps[holeIndex] = handicapValue;
+    setHoleHandicaps(newHoleHandicaps);
+  };
+
   const handleSaveCourse = async () => {
     if (!state) {
       alert('Please select a state');
@@ -34,6 +45,10 @@ function AddCourse({ onBack }) {
       alert('Please enter a course name');
       return;
     }
+    if (!isValidHoleHandicaps(holeHandicaps)) {
+      alert('Please assign each hole a unique handicap ranking from 1 through 18');
+      return;
+    }
 
     setSaving(true);
     try {
@@ -41,6 +56,7 @@ function AddCourse({ onBack }) {
         state: state,
         name: courseName.trim(),
         pars: pars,
+        holeHandicaps: holeHandicaps,
         isActive: true,
         createdAt: Timestamp.now()
       });
@@ -49,6 +65,7 @@ function AddCourse({ onBack }) {
       setState('');
       setCourseName('');
       setPars(Array(18).fill(4));
+      setHoleHandicaps(Array.from({ length: 18 }, (_, index) => index + 1));
       if (onBack) onBack();
     } catch (error) {
       console.error('Error adding course:', error);
@@ -95,6 +112,7 @@ function AddCourse({ onBack }) {
         </div>
 
         <div className="form-group">
+          <p className="course-help-text">Handicap rankings determine the order in which strokes are received. Use each number from 1 through 18 exactly once.</p>
           <div className="pars-grid">
             {pars.map((par, index) => (
               <div key={index} className="par-item">
@@ -108,6 +126,17 @@ function AddCourse({ onBack }) {
                   <option value="3">Par 3</option>
                   <option value="4">Par 4</option>
                   <option value="5">Par 5</option>
+                </select>
+                <label htmlFor={`hole-handicap-${index + 1}`}>HCP</label>
+                <select
+                  id={`hole-handicap-${index + 1}`}
+                  value={holeHandicaps[index]}
+                  onChange={(e) => handleHoleHandicapChange(index, e.target.value)}
+                  className="par-select"
+                >
+                  {Array.from({ length: 18 }, (_, handicapIndex) => (
+                    <option key={handicapIndex + 1} value={handicapIndex + 1}>{handicapIndex + 1}</option>
+                  ))}
                 </select>
               </div>
             ))}
@@ -181,6 +210,12 @@ function AddCourse({ onBack }) {
           margin-top: 15px;
         }
 
+        .course-help-text {
+          margin: 0 0 12px;
+          color: #666;
+          font-size: 14px;
+        }
+
         .par-item {
           display: flex;
           flex-direction: row;
@@ -193,6 +228,10 @@ function AddCourse({ onBack }) {
           font-weight: 500;
           color: #666;
           min-width: 60px;
+        }
+
+        .par-item label:nth-of-type(2) {
+          min-width: auto;
         }
 
         .par-select {

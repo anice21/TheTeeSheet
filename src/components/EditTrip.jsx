@@ -62,6 +62,12 @@ function EditTrip({ selectedTrip, currentUser, onBack }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [successMessage, setSuccessMessage] = useState(null);
+  const [tripPlayers, setTripPlayers] = useState([]);
+  const [availablePlayers, setAvailablePlayers] = useState([]);
+  const [selectedPlayerIds, setSelectedPlayerIds] = useState([]);
+  const [addingPlayers, setAddingPlayers] = useState(false);
+  const [isPrivate, setIsPrivate] = useState(selectedTrip?.isPrivate !== false);
+  const [savingVisibility, setSavingVisibility] = useState(false);
   
   // State for editing existing rounds
   const [editingRoundId, setEditingRoundId] = useState(null);
@@ -125,6 +131,21 @@ function EditTrip({ selectedTrip, currentUser, onBack }) {
           }))
           .filter(course => course.isActive === true);
         setCourses(coursesData);
+
+        const tripPlayersSnapshot = await getDocs(collection(db, 'trips', selectedTrip.id, 'players'));
+        const tripPlayersData = tripPlayersSnapshot.docs.map(playerDoc => ({
+          id: playerDoc.id,
+          ...playerDoc.data()
+        }));
+        setTripPlayers(tripPlayersData);
+
+        const allPlayersSnapshot = await getDocs(collection(db, 'players'));
+        const existingPlayerIds = new Set(tripPlayersData.map(player => player.playerId));
+        setAvailablePlayers(
+          allPlayersSnapshot.docs
+            .map(playerDoc => ({ playerId: playerDoc.id, ...playerDoc.data() }))
+            .filter(player => player.isActive !== false && !existingPlayerIds.has(player.playerId))
+        );
       } catch (err) {
         console.error('Error fetching data:', err);
         setError('Failed to load trip data. Please try again.');
@@ -135,6 +156,65 @@ function EditTrip({ selectedTrip, currentUser, onBack }) {
     
     fetchData();
   }, [selectedTrip]);
+
+  const togglePlayerSelection = (playerId) => {
+    setSelectedPlayerIds(prev => prev.includes(playerId)
+      ? prev.filter(id => id !== playerId)
+      : [...prev, playerId]);
+  };
+
+  const saveVisibility = async (nextIsPrivate) => {
+    setSavingVisibility(true);
+    setError(null);
+    setSuccessMessage(null);
+    try {
+      await updateDoc(doc(db, 'trips', selectedTrip.id), {
+        isPrivate: nextIsPrivate,
+        updatedAt: serverTimestamp()
+      });
+      setIsPrivate(nextIsPrivate);
+      setSuccessMessage('Trip visibility updated!');
+      setTimeout(() => setSuccessMessage(null), 3000);
+    } catch (err) {
+      console.error('Error updating trip visibility:', err);
+      setError('Failed to update trip visibility. Please try again.');
+    } finally {
+      setSavingVisibility(false);
+    }
+  };
+
+  const addPlayersToTrip = async () => {
+    if (selectedPlayerIds.length === 0) return;
+
+    setAddingPlayers(true);
+    setError(null);
+    try {
+      const playersToAdd = availablePlayers.filter(player => selectedPlayerIds.includes(player.playerId));
+      await Promise.all(playersToAdd.map(player => setDoc(
+        doc(db, 'trips', selectedTrip.id, 'players', player.playerId),
+        {
+          playerId: player.playerId,
+          name: player.name || '',
+          email: player.email || '',
+          handicap: typeof player.handicap === 'number' ? player.handicap : 0,
+          invitationStatus: 'accepted',
+          invitedAt: serverTimestamp()
+        }
+      )));
+
+      setTripPlayers(prev => [...prev, ...playersToAdd]);
+      setAvailablePlayers(prev => prev.filter(player => !selectedPlayerIds.includes(player.playerId)));
+      setSelectedPlayerIds([]);
+      setSuccessMessage(`${playersToAdd.length} player${playersToAdd.length !== 1 ? 's' : ''} added to the trip.`);
+      setTimeout(() => setSuccessMessage(null), 3000);
+    } catch (err) {
+      console.error('Error adding players to trip:', err);
+      setError('Failed to add players to the trip. Please try again.');
+    } finally {
+      setAddingPlayers(false);
+    }
+  };
+
 
   // Add a new round slot
   const addRound = () => {
@@ -549,6 +629,74 @@ function EditTrip({ selectedTrip, currentUser, onBack }) {
           {error}
         </div>
       )}
+
+      <section className="trip-player-management">
+        <div className="round-item-header">
+          <div>
+            <h3>Trip Visibility</h3>
+            <p className="round-selection-subtitle">
+              Private trips are only visible to invited players. Public trips are visible to any logged-in user.
+            </p>
+          </div>
+        </div>
+        <select
+          value={isPrivate ? 'private' : 'public'}
+          onChange={(e) => saveVisibility(e.target.value === 'private')}
+          disabled={savingVisibility}
+        >
+          <option value="private">Private (trip members only)</option>
+          <option value="public">Public (visible to all users)</option>
+        </select>
+      </section>
+
+      <section className="trip-player-management">
+        <div className="round-item-header">
+          <div>
+            <h3>Trip Players</h3>
+            <p className="round-selection-subtitle">Add players who should be available when starting rounds.</p>
+          </div>
+          <span>{tripPlayers.length} player{tripPlayers.length !== 1 ? 's' : ''}</span>
+        </div>
+
+        {tripPlayers.length > 0 ? (
+          <div className="trip-player-list">
+            {tripPlayers.map(player => (
+              <div key={player.playerId || player.id} className="trip-player-row">
+                <span>{player.name || player.email || player.playerId}</span>
+                {typeof player.handicap === 'number' && <span>HCP {player.handicap}</span>}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="round-selection-subtitle">No players have been added yet.</p>
+        )}
+
+        {availablePlayers.length > 0 && (
+          <div className="trip-player-add-controls">
+            <div className="trip-player-options">
+              {availablePlayers.map(player => (
+                <label key={player.playerId} className="trip-player-option">
+                  <input
+                    type="checkbox"
+                    checked={selectedPlayerIds.includes(player.playerId)}
+                    onChange={() => togglePlayerSelection(player.playerId)}
+                  />
+                  <span>{player.name || player.email || player.playerId}</span>
+                </label>
+              ))}
+            </div>
+            <button
+              type="button"
+              className="save-rounds-btn"
+              onClick={addPlayersToTrip}
+              disabled={addingPlayers || selectedPlayerIds.length === 0}
+            >
+              {addingPlayers ? 'Adding...' : 'Add Selected Players'}
+            </button>
+          </div>
+        )}
+
+      </section>
 
       {/* Existing Rounds */}
       <div className="round-list">

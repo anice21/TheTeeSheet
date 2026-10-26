@@ -6,11 +6,15 @@ import { collection, getDocs, addDoc } from "firebase/firestore";
 import { doc, getDoc } from "firebase/firestore";
 
 
-function RoundStart({ currentUserID, currentHole, setCurrentHole, selectedCourse = null, setSelectedCourse = () => {}, roundStarted, setRoundStarted = () => {}, selectedPlayers = [], setSelectedPlayers = () => {}, isRoundFinished = false, setIsRoundFinished = () => {}, setView = () => {}, onSubmitRound = null, selectedTrip = null }) {
+function RoundStart({ currentUserID, currentHole, setCurrentHole, selectedCourse = null, setSelectedCourse = () => {}, roundStarted, setRoundStarted = () => {}, selectedPlayers = [], setSelectedPlayers = () => {}, isRoundFinished = false, setIsRoundFinished = () => {}, setView = () => {}, onSubmitRound = null, selectedTrip = null, roundType = 'full', setRoundType = () => {} }) {
     
     const [players, setPlayers] = useState([]);
     const [courses, setCourses] = useState([]);
-    const [roundType, setRoundType] = useState('full');
+    
+    // Best Ball format state
+    const [format, setFormat] = useState('individual'); // 'individual' or 'bestball'
+    const [teams, setTeams] = useState([]); // [{ id, name, players: [] }]
+
 
     useEffect(() => {
         // Fetch rounds from the selected trip
@@ -139,6 +143,76 @@ function RoundStart({ currentUserID, currentHole, setCurrentHole, selectedCourse
         setSelectedPlayers((prev) => prev.filter((_, i) => i !== index));
     };
 
+    // ===== BEST BALL TEAM MANAGEMENT FUNCTIONS =====
+    
+    // Add a new team
+    const addNewTeam = () => {
+        const newTeamId = `team-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+        setTeams([...teams, { id: newTeamId, name: '', players: [] }]);
+    };
+
+    // Remove a team
+    const removeTeam = (teamId) => {
+        setTeams(teams.filter(t => t.id !== teamId));
+    };
+
+    // Update team name
+    const updateTeamName = (teamId, name) => {
+        setTeams(teams.map(t => 
+            t.id === teamId ? { ...t, name } : t
+        ));
+    };
+
+    // Get players not yet assigned to any team
+    const getAvailablePlayers = () => {
+        const assignedPlayerIds = teams.flatMap(t => t.players.map(p => p.playerId));
+        // In Best Ball mode, use all players. In Individual mode, use selectedPlayers
+        const playerPool = format === 'bestball' ? players : selectedPlayers;
+        return playerPool.filter(p => p && !assignedPlayerIds.includes(p.playerId));
+    };
+
+    // Add player to a team
+    const addPlayerToTeam = (teamId, playerId) => {
+        if (!playerId) return;
+        
+        // In Best Ball mode, get from all players. In Individual mode, from selectedPlayers
+        const playerPool = format === 'bestball' ? players : selectedPlayers;
+        const player = playerPool.find(p => p && p.playerId === playerId);
+        if (!player) return;
+        
+        setTeams(teams.map(t => 
+            t.id === teamId 
+                ? { ...t, players: [...t.players, player] }
+                : t
+        ));
+    };
+
+    // Remove player from a team
+    const removePlayerFromTeam = (teamId, playerId) => {
+        setTeams(teams.map(t => 
+            t.id === teamId
+                ? { ...t, players: t.players.filter(p => p.playerId !== playerId) }
+                : t
+        ));
+    };
+
+    // Validate best ball setup
+    const validateBestBall = () => {
+        if (teams.length === 0) {
+            return { valid: false, message: 'Please add at least one team' };
+        }
+        
+        // Check for empty teams
+        const emptyTeams = teams.filter(t => t.players.length === 0);
+        if (emptyTeams.length > 0) {
+            return { valid: false, message: 'All teams must have at least one player' };
+        }
+        
+        // No need to check unassigned players in Best Ball mode since players are added directly to teams
+        
+        return { valid: true };
+    };
+
     const sortedCourses = [...courses].sort((a, b) => {
         const aId = a.tripRoundID ?? '';
         const bId = b.tripRoundID ?? '';
@@ -156,10 +230,15 @@ function RoundStart({ currentUserID, currentHole, setCurrentHole, selectedCourse
     });
 
     if (roundStarted) {
+        // For Best Ball, get players from teams. For Individual, use selectedPlayers
+        const playersForRound = format === 'bestball' 
+            ? teams.flatMap(team => team.players)
+            : selectedPlayers;
+            
         return (
             <Hole
                 course={selectedCourse}
-                players={selectedPlayers}
+                players={playersForRound}
                 currentHole={currentHole}
                 setCurrentHole={setCurrentHole}
                 isRoundFinished={isRoundFinished}
@@ -183,13 +262,48 @@ function RoundStart({ currentUserID, currentHole, setCurrentHole, selectedCourse
             console.error("No trip selected");
             return;
         }
+        
+        // Validate best ball format if selected
+        if (format === 'bestball') {
+            const validation = validateBestBall();
+            if (!validation.valid) {
+                alert(validation.message);
+                return;
+            }
+        }
+        
+        // For Best Ball, build players list from teams. For Individual, use selectedPlayers
+        const playersToSave = format === 'bestball' 
+            ? teams.flatMap(team => team.players)
+            : selectedPlayers;
+        
         // Generate a random groupId for this group
         const groupId = Math.random().toString(36).substring(2, 12) + Date.now().toString(36);
+        
+        // Build team assignments for best ball
+        let teamAssignments = {};
+        if (format === 'bestball') {
+            teams.forEach(team => {
+                const teamId = team.id;
+                const teamName = team.name || `Team ${teams.indexOf(team) + 1}`;
+                
+                team.players.forEach(player => {
+                    teamAssignments[player.playerId] = {
+                        teamId: teamId,
+                        teamName: teamName
+                    };
+                });
+            });
+        }
+        
         try {
-            const promises = selectedPlayers.map(player => {
+            const promises = playersToSave.map(player => {
                 if (!player || !player.playerId) return null;
                 console.log("Player ID:", player.playerId);
                 console.log("Current User ID:", currentUserID);
+                
+                const teamInfo = format === 'bestball' ? teamAssignments[player.playerId] : {};
+                
                 return addDoc(collection(db, "trips", selectedTrip.id, "scores"), {
                     courseId: selectedCourse.courseId,
                     courseName: selectedCourse.name || "Unnamed Course",
@@ -202,6 +316,9 @@ function RoundStart({ currentUserID, currentHole, setCurrentHole, selectedCourse
                     isActive: true,
                     tripRoundID: selectedCourse.tripRoundID || null,
                     roundType: roundType,
+                    format: format, // NEW: 'individual' or 'bestball'
+                    teamId: teamInfo.teamId || null, // NEW: team identifier
+                    teamName: teamInfo.teamName || null, // NEW: team name
                     scores: Array(18).fill(0),
                     scoreToPar: Array(18).fill(0)
                 });
@@ -256,46 +373,154 @@ function RoundStart({ currentUserID, currentHole, setCurrentHole, selectedCourse
             </label>
 
             <label>
-                <div style={{ marginTop: 12 }}>
-                    <strong>Players:</strong>
+                Format:
+                <select 
+                    className="select-dropdown" 
+                    name="format" 
+                    value={format}
+                    onChange={(e) => setFormat(e.target.value)}
+                >
+                    <option value="individual">Stroke</option>
+                    <option value="bestball">Best Ball</option>
+                </select>
+            </label>
 
-                    {selectedPlayers.length === 0 && (
-                        <div style={{ marginTop: 8, marginBottom: 8, color: '#666' }}>No players added</div>
-                    )}
+            {/* Only show regular player selection for individual format */}
+            {format === 'individual' && (
+                <label>
+                    <div style={{ marginTop: 12 }}>
+                        <strong>Players:</strong>
 
-                    {selectedPlayers.map((selected, idx) => {
-                        // compute available players for this slot: exclude players selected in other slots
-                        const available = players.filter((p) => !selectedPlayers.some((sp, i2) => i2 !== idx && sp && sp.playerId === p.playerId));
+                        {selectedPlayers.length === 0 && (
+                            <div style={{ marginTop: 8, marginBottom: 8, color: '#666' }}>No players added</div>
+                        )}
 
-                        return (
-                            <div key={idx} style={{ marginTop: 8, marginBottom: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
-                                <select className="select-dropdown" value={selected ? selected.playerId : ""} onChange={(e) => selectPlayer(idx, e)}>
-                                    <option value="" disabled>Select player</option>
-                                    {available.map((p) => (
-                                        <option key={String(p.playerId)} value={p.playerId}>{p.name}</option>
+                        {selectedPlayers.map((selected, idx) => {
+                            // compute available players for this slot: exclude players selected in other slots
+                            const available = players.filter((p) => !selectedPlayers.some((sp, i2) => i2 !== idx && sp && sp.playerId === p.playerId));
+
+                            return (
+                                <div key={idx} style={{ marginTop: 8, marginBottom: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
+                                    <select className="select-dropdown" value={selected ? selected.playerId : ""} onChange={(e) => selectPlayer(idx, e)}>
+                                        <option value="" disabled>Select player</option>
+                                        {available.map((p) => (
+                                            <option key={String(p.playerId)} value={p.playerId}>{p.name}</option>
+                                        ))}
+                                    </select>
+                                    <div className="add-remove-buttons">
+                                        <button type="button" onClick={() => removePlayer(idx)}>Remove</button>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+
+                </label>
+            )}
+
+            {/* Best Ball Team Management UI */}
+            {format === 'bestball' && (
+                <label>
+                    <div style={{ marginTop: 12 }}>
+                        <strong>Team Setup:</strong>
+
+                        {teams.length === 0 && (
+                            <div style={{ marginTop: 8, marginBottom: 8, color: '#666' }}>No teams added</div>
+                        )}
+                        
+                        {/* Display existing teams */}
+                        {teams.map((team, teamIdx) => (
+                            <div key={team.id} style={{ marginTop: 12, marginBottom: 12 }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                                    <div style={{ fontSize: '0.95em', color: '#555', fontWeight: 600 }}>
+                                        Team {teamIdx + 1}:
+                                    </div>
+                                    <button 
+                                        type="button"
+                                        onClick={() => removeTeam(team.id)}
+                                        style={{
+                                            padding: '6px 12px',
+                                            fontSize: '0.9em',
+                                            color: 'white',
+                                            backgroundColor: '#dc3545',
+                                            border: 'none',
+                                            borderRadius: '6px',
+                                            cursor: 'pointer',
+                                            transition: 'background-color 0.3s'
+                                        }}
+                                        onMouseOver={(e) => e.target.style.backgroundColor = '#c82333'}
+                                        onMouseOut={(e) => e.target.style.backgroundColor = '#dc3545'}
+                                    >
+                                        Remove Team
+                                    </button>
+                                </div>
+                                
+                                    <div>
+                                    <strong style={{ fontSize: '0.9em', color: '#666' }}>Players:</strong>
+                                    {team.players.length === 0 && (
+                                        <div style={{ marginTop: 4, marginBottom: 4, fontSize: '0.9em', color: '#999', fontStyle: 'italic' }}>No players added yet</div>
+                                    )}
+                                    
+                                    {team.players.map((player, playerIdx) => (
+                                        <div key={playerIdx} style={{ marginTop: 8, marginBottom: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
+                                            <span style={{ flex: 1 }}>{player.name}</span>
+                                            <div className="add-remove-buttons">
+                                                <button 
+                                                    type="button"
+                                                    onClick={() => removePlayerFromTeam(team.id, player.playerId)}
+                                                >
+                                                    Remove
+                                                </button>
+                                            </div>
+                                        </div>
                                     ))}
-                                </select>
-                                <div className="add-remove-buttons">
-                                    <button type="button" onClick={() => removePlayer(idx)}>Remove</button>
+                                    
+                                    {/* Add Player dropdown for this team */}
+                                    <div style={{ marginTop: 8 }}>
+                                        <select
+                                            className="select-dropdown"
+                                            value=""
+                                            onChange={(e) => addPlayerToTeam(team.id, e.target.value)}
+                                            disabled={getAvailablePlayers().length === 0}
+                                        >
+                                            <option value="">Add player to team</option>
+                                            {getAvailablePlayers().map(player => (
+                                                <option key={player.playerId} value={player.playerId}>
+                                                    {player.name}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </div>
                                 </div>
                             </div>
-                        );
-                    })}
-                </div>
+                        ))}
+                    </div>
+                    
+                </label>
+            )}
 
+            <div className="round-start-actions">
                 <div className="add-remove-buttons">
-                    <button type="button" onClick={addPlayer} disabled={availablePlayersToAdd.length === 0}>
-                        Add Player
-                    </button>
+                    {format === 'individual' ? (
+                        <button type="button" onClick={addPlayer} disabled={availablePlayersToAdd.length === 0}>
+                            Add Player
+                        </button>
+                    ) : (
+                        <button type="button" onClick={addNewTeam} disabled={teams.length >= 4}>
+                            Add Team
+                        </button>
+                    )}
+                </div>
+                <div className="add-remove-buttons">
                     <button onClick={handleStartRound}
                         disabled={selectedCourse === null ||
                             !roundType ||
-                            selectedPlayers.length === 0 ||
-                            selectedPlayers.some(p => !p || !p.playerId)}>
+                            (format === 'individual' && (selectedPlayers.length === 0 || selectedPlayers.some(p => !p || !p.playerId))) ||
+                            (format === 'bestball' && teams.length === 0)}>
                         Start Round
                     </button>
                 </div>
-            </label>
+            </div>
         </div>
     );
 }

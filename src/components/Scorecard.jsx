@@ -12,9 +12,11 @@ const Scorecard = ({ selectedTrip }) => {
   const [loadingGroups, setLoadingGroups] = useState(false);
   const [scorecardData, setScorecardData] = useState(null);
   const [loadingScorecard, setLoadingScorecard] = useState(false);
-  const [defaultCourseId, setDefaultCourseId] = useState(null);
+  const [defaultTripRoundID, setDefaultTripRoundID] = useState(null);
   const [defaultGroupId, setDefaultGroupId] = useState(null);
   const [fullCourseData, setFullCourseData] = useState(null);
+  const [format, setFormat] = useState('individual');
+  const [scoreMode, setScoreMode] = useState('gross');
 
   useEffect(() => {
     async function fetchCourses() {
@@ -69,8 +71,16 @@ const Scorecard = ({ selectedTrip }) => {
 
         if (querySnapshot.empty) return;
 
-        const roundData = querySnapshot.docs[0].data();
-        setDefaultCourseId(roundData.courseId || null);
+        // Sort by tripRoundID descending to get the most recent round
+        const rounds = querySnapshot.docs
+          .map(doc => doc.data())
+          .sort((a, b) => Number(b.tripRoundID || 0) - Number(a.tripRoundID || 0));
+        
+        console.log('Scorecard - Unfinished rounds:', rounds.map(r => ({ tripRoundID: r.tripRoundID, courseId: r.courseId })));
+        
+        const roundData = rounds[0];
+        console.log('Scorecard - Selected round:', { tripRoundID: roundData.tripRoundID, courseId: roundData.courseId });
+        setDefaultTripRoundID(roundData.tripRoundID || null);
         setDefaultGroupId(roundData.groupId || null);
       } catch (error) {
         console.error('Error fetching in-progress round for scorecard:', error);
@@ -81,12 +91,13 @@ const Scorecard = ({ selectedTrip }) => {
   }, [selectedTrip]);
 
   useEffect(() => {
-    if (!defaultCourseId || selectedCourse) return;
-    const courseMatch = courses.find(course => course.id === defaultCourseId || course.courseId === defaultCourseId);
+    if (!defaultTripRoundID || selectedCourse) return;
+    const courseMatch = courses.find(course => course.tripRoundID === defaultTripRoundID);
     if (courseMatch) {
+      console.log('Scorecard - Setting selected course to:', { id: courseMatch.id, tripRoundID: courseMatch.tripRoundID });
       setSelectedCourse(courseMatch.id);
     }
-  }, [courses, defaultCourseId, selectedCourse]);
+  }, [courses, defaultTripRoundID, selectedCourse]);
 
   // Fetch groups when a course is selected
   useEffect(() => {
@@ -134,15 +145,14 @@ const Scorecard = ({ selectedTrip }) => {
     if (!defaultGroupId || !groups.length) return;
     if (selectedGroup) return;
     const isDefaultCourse = courses.some(course =>
-      (course.id === selectedCourse || course.courseId === selectedCourse) &&
-      (course.id === defaultCourseId || course.courseId === defaultCourseId)
+      course.id === selectedCourse && course.tripRoundID === defaultTripRoundID
     );
     if (!isDefaultCourse) return;
     const groupExists = groups.some(group => group.groupId === defaultGroupId);
     if (groupExists) {
       setSelectedGroup(defaultGroupId);
     }
-  }, [groups, defaultGroupId, selectedGroup, courses, selectedCourse, defaultCourseId]);
+  }, [groups, defaultGroupId, selectedGroup, courses, selectedCourse, defaultTripRoundID]);
 
   // Fetch full course data when a round is selected
   useEffect(() => {
@@ -192,6 +202,11 @@ const Scorecard = ({ selectedTrip }) => {
           .map(doc => doc.data())
           .filter(r => r.tripRoundID === selectedTripRoundID && r.groupId === selectedGroup && r.isActive);
         setScorecardData(rounds);
+        
+        // Set format from first round
+        if (rounds.length > 0) {
+          setFormat(rounds[0].format || 'individual');
+        }
       } catch (error) {
         console.error('Error fetching scorecard:', error);
         setScorecardData(null);
@@ -361,6 +376,19 @@ const Scorecard = ({ selectedTrip }) => {
           ))}
         </select>
       </div>
+      <div style={{ marginBottom: '1rem' }}>
+        <label htmlFor="score-mode-select">Score Type:</label>
+        <select
+          className="select-dropdown"
+          name="scoreMode"
+          id="score-mode-select"
+          value={scoreMode}
+          onChange={e => setScoreMode(e.target.value)}
+        >
+          <option value="gross">Gross</option>
+          <option value="net">Net</option>
+        </select>
+      </div>
 
       {/* Scorecard content: only show if both selected */}
       {selectedCourse && selectedGroup ? (
@@ -371,8 +399,60 @@ const Scorecard = ({ selectedTrip }) => {
             <h3 className="leaderboard-tournament-title">Scorecard</h3>
             <div className="leaderboard-tournament-table-scroll">
               {(() => {
-                // Get roundType from first score record
+                // Get roundType and format from first score record
                 const roundType = scorecardData[0]?.roundType || 'full';
+                const isBestBall = format === 'bestball';
+                
+                // Calculate team scores for each hole
+                const calculateTeamScores = () => {
+                  if (!isBestBall) return null;
+                  const teamScores = Array(18).fill(null);
+                  for (let hole = 0; hole < 18; hole++) {
+                    const holeScores = scorecardData
+                      .map(round => scoreMode === 'net' ? round.netScores?.[hole] : round.scores?.[hole])
+                      .filter(score => typeof score === 'number' && score > 0);
+                    if (holeScores.length > 0) {
+                      teamScores[hole] = Math.min(...holeScores);
+                    }
+                  }
+                  return teamScores;
+                };
+                
+                const teamScores = calculateTeamScores();
+
+                const teamGroups = isBestBall
+                  ? Array.from(scorecardData.reduce((groups, round) => {
+                      const teamKey = round.teamId || 'unassigned';
+                      if (!groups.has(teamKey)) {
+                        groups.set(teamKey, {
+                          teamKey,
+                          teamName: round.teamName || null,
+                          rounds: []
+                        });
+                      }
+                      groups.get(teamKey).rounds.push(round);
+                      return groups;
+                    }, new Map()).values())
+                  : [];
+
+                const teamScoresById = new Map(teamGroups.map(group => {
+                  const scores = Array(18).fill(null);
+                  for (let hole = 0; hole < 18; hole++) {
+                    const holeScores = group.rounds
+                      .map(round => scoreMode === 'net' ? round.netScores?.[hole] : round.scores?.[hole])
+                      .filter(score => typeof score === 'number' && score > 0);
+                    if (holeScores.length > 0) scores[hole] = Math.min(...holeScores);
+                  }
+                  return [group.teamKey, scores];
+                }));
+                
+                // Check if a player's score is the best for a hole
+                const isBestScore = (round, holeIndex) => {
+                  if (!isBestBall || !teamScores) return false;
+                  const playerScore = scoreMode === 'net' ? round.netScores?.[holeIndex] : round.scores?.[holeIndex];
+                  const playerTeamScores = teamScoresById.get(round.teamId || 'unassigned');
+                  return playerScore === playerTeamScores?.[holeIndex] && playerScore > 0;
+                };
                 
                 // Determine which holes to display
                 let holesToDisplay;
@@ -397,6 +477,67 @@ const Scorecard = ({ selectedTrip }) => {
                     holesToDisplay = Array.from({ length: 18 }, (_, i) => i);
                     break;
                 }
+
+                const renderTeamRow = (group) => {
+                  const groupScores = teamScoresById.get(group.teamKey) || [];
+                  const outTotal = roundType === 'full'
+                    ? groupScores.slice(0, 9).reduce((a, b) => a + (b || 0), 0)
+                    : null;
+                  const inTotal = roundType === 'full'
+                    ? groupScores.slice(9, 18).reduce((a, b) => a + (b || 0), 0)
+                    : null;
+
+                  return (
+                    <tr key={`team-${group.teamKey}`} className="team-score-row" style={{ fontWeight: 'bold', backgroundColor: '#f8f9fa', borderTop: '2px solid #d1d5db', borderBottom: '2px solid #000' }}>
+                      <td className="leaderboard-td leaderboard-td-name leaderboard-td-tournament-name" style={{ paddingLeft: '18px' }}>Team Score</td>
+                      {holesToDisplay.map((holeIndex) => {
+                        const teamScore = groupScores[holeIndex];
+                        const par = getHolePar(selectedCourseData, holeIndex);
+                        const iconType = getIconType(teamScore, par);
+                        const iconLabel = getIconLabel(iconType);
+                        const solid = isSolidIcon(iconType);
+                        const iconStyle = getIconStyle(iconType);
+                        return (
+                          <React.Fragment key={holeIndex}>
+                            <td className="leaderboard-td leaderboard-td-tournament-round">
+                              {!teamScore ? '' : (
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                  <span
+                                    style={{
+                                      position: 'relative',
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      width: `${ICON_SIZE}px`,
+                                      height: `${ICON_SIZE}px`,
+                                      lineHeight: `${ICON_SIZE}px`,
+                                      fontWeight: 600,
+                                      fontSize: '14px',
+                                      color: solid ? '#fff' : 'inherit'
+                                    }}
+                                    aria-label={iconLabel ? `${iconLabel}: ${teamScore}` : `Team score: ${teamScore}`}
+                                  >
+                                    <span style={{ position: 'relative', zIndex: 1 }}>{teamScore}</span>
+                                    {iconStyle && <span aria-hidden="true" style={iconStyle} />}
+                                  </span>
+                                </span>
+                              )}
+                            </td>
+                            {roundType === 'full' && holeIndex === 8 && (
+                              <td className="leaderboard-td leaderboard-td-tournament-total">{outTotal}</td>
+                            )}
+                            {roundType === 'full' && holeIndex === 17 && (
+                              <td className="leaderboard-td leaderboard-td-tournament-total">{inTotal}</td>
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
+                      <td className="leaderboard-td leaderboard-td-tournament-total">
+                        {holesToDisplay.reduce((sum, index) => sum + (groupScores[index] || 0), 0)}
+                      </td>
+                    </tr>
+                  );
+                };
                 
                 return (
               <table className="leaderboard-table leaderboard-table-tournament">
@@ -450,16 +591,28 @@ const Scorecard = ({ selectedTrip }) => {
                   </tr>
                 </thead>
                 <tbody>
-                  {scorecardData.map((round, idx) => {
+                  {(isBestBall
+                    ? teamGroups.flatMap((group, groupIndex) => [
+                        ...group.rounds.map(round => ({ round })),
+                        { teamRow: group, groupIndex }
+                      ])
+                    : scorecardData.map(round => ({ round })))
+                    .map((row, idx) => {
+                    if (row.teamRow) {
+                      return renderTeamRow(row.teamRow);
+                    }
+
+                    const round = row.round;
                     // Calculate totals based on displayed holes
-                    const outTotal = roundType === 'full' && Array.isArray(round.scores)
-                      ? round.scores.slice(0, 9).reduce((a, b) => a + b, 0)
+                    const scoreValues = scoreMode === 'net' ? round.netScores : round.scores;
+                    const outTotal = roundType === 'full' && Array.isArray(scoreValues)
+                      ? scoreValues.slice(0, 9).reduce((a, b) => a + (b || 0), 0)
                       : null;
-                    const inTotal = roundType === 'full' && Array.isArray(round.scores)
-                      ? round.scores.slice(9, 18).reduce((a, b) => a + b, 0)
+                    const inTotal = roundType === 'full' && Array.isArray(scoreValues)
+                      ? scoreValues.slice(9, 18).reduce((a, b) => a + (b || 0), 0)
                       : null;
-                    const displayTotal = Array.isArray(round.scores)
-                      ? holesToDisplay.reduce((sum, i) => sum + (round.scores[i] || 0), 0)
+                    const displayTotal = Array.isArray(scoreValues)
+                      ? holesToDisplay.reduce((sum, i) => sum + (scoreValues[i] || 0), 0)
                       : '';
                     
                     return (
@@ -467,36 +620,39 @@ const Scorecard = ({ selectedTrip }) => {
                       {/* Removed position cell */}
                       <td className="leaderboard-td leaderboard-td-name leaderboard-td-tournament-name" style={{paddingLeft: '18px'}}>{round.playerName || round.playerId}</td>
                       {holesToDisplay.map((holeIndex, displayIdx) => {
-                        const score = round.scores?.[holeIndex] || 0;
+                        const score = (scoreMode === 'net' ? round.netScores?.[holeIndex] : round.scores?.[holeIndex]) || 0;
                         const par = getHolePar(selectedCourseData, holeIndex);
                         const iconType = getIconType(score, par);
                         const iconLabel = getIconLabel(iconType);
                         const solid = isSolidIcon(iconType);
                         const iconStyle = getIconStyle(iconType);
+                        const isPlayerBest = isBestScore(round, holeIndex);
 
                         return (
                           <React.Fragment key={holeIndex}>
                             <td className="leaderboard-td leaderboard-td-tournament-round">
                               {score === 0 ? '' : (
-                                <span
-                                  style={{
-                                    position: 'relative',
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    width: `${ICON_SIZE}px`,
-                                    height: `${ICON_SIZE}px`,
-                                    lineHeight: `${ICON_SIZE}px`,
-                                    fontWeight: 600,
-                                    fontSize: '14px',
-                                    color: solid ? '#fff' : 'inherit',
-                                  }}
-                                  aria-label={iconLabel ? `${iconLabel}: ${score}` : `Score: ${score}`}
-                                >
-                                  <span style={{ position: 'relative', zIndex: 1 }}>{score}</span>
-                                  {iconStyle && (
-                                    <span aria-hidden="true" style={iconStyle} />
-                                  )}
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                  <span
+                                    style={{
+                                      position: 'relative',
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      width: `${ICON_SIZE}px`,
+                                      height: `${ICON_SIZE}px`,
+                                      lineHeight: `${ICON_SIZE}px`,
+                                      fontWeight: isPlayerBest ? 'bold' : 600,
+                                      fontSize: '14px',
+                                      color: solid ? '#fff' : (isPlayerBest ? '#28a745' : 'inherit'),
+                                    }}
+                                    aria-label={iconLabel ? `${iconLabel}: ${score}` : `Score: ${score}`}
+                                  >
+                                    <span style={{ position: 'relative', zIndex: 1 }}>{score}</span>
+                                    {iconStyle && (
+                                      <span aria-hidden="true" style={iconStyle} />
+                                    )}
+                                  </span>
                                 </span>
                               )}
                             </td>

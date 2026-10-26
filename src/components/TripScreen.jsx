@@ -15,6 +15,7 @@ function TripScreen({ currentUser, setView }) {
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [description, setDescription] = useState('');
+  const [isPrivate, setIsPrivate] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
   const [currentTripId, setCurrentTripId] = useState(null);
@@ -40,6 +41,7 @@ function TripScreen({ currentUser, setView }) {
         endDate: Timestamp.fromDate(new Date(endDate)),
         description: description,
         organizerId: currentUser?.uid || '',
+        isPrivate: isPrivate,
         createdAt: Timestamp.now(),
         updatedAt: Timestamp.now(),
         isActive: true
@@ -64,6 +66,7 @@ function TripScreen({ currentUser, setView }) {
       setStartDate('');
       setEndDate('');
       setDescription('');
+      setIsPrivate(true);
     } catch (error) {
       logger.error('Error creating trip', {
         error,
@@ -176,6 +179,18 @@ function TripScreen({ currentUser, setView }) {
             placeholder="Add details about the trip..."
             rows="4"
           />
+        </div>
+
+        <div className="form-group">
+          <label htmlFor="visibility">Visibility</label>
+          <select
+            id="visibility"
+            value={isPrivate ? 'private' : 'public'}
+            onChange={(e) => setIsPrivate(e.target.value === 'private')}
+          >
+            <option value="private">Private (trip members only)</option>
+            <option value="public">Public (visible to all users)</option>
+          </select>
         </div>
 
         <button type="submit" className="trip-submit-btn" disabled={saving}>
